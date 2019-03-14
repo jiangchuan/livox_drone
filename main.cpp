@@ -1,0 +1,559 @@
+//
+// The MIT License (MIT)
+//
+// Copyright (c) 2019 Livox. All rights reserved.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdint.h>
+#include <math.h>
+#include <sstream>
+#include <fstream>
+
+#include <vector>
+
+#include "livox_sdk.h"
+#include <ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <tf2/convert.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Transform.h>
+// #include "tf2_geometry_msgs/tf2_geometry_msgs.h"
+
+// #include <pcl_ros/point_cloud.h>
+
+#include <mavros_msgs/Altitude.h>
+
+#include "sensor_msgs/NavSatFix.h"
+
+#define BUFFER_POINTS (32 * 1024)      // must be 2^n
+#define POINTS_PER_FRAME 5000          // must < BUFFER_POINTS
+#define PACKET_GAP_MISS_TIME (1500000) // 1.5ms
+
+#define BD_ARGC_NUM (4)
+#define BD_ARGV_POS (1)
+#define COMMANDLINE_BD_SIZE (15)
+
+// typedef pcl::PointCloud<pcl::PointXYZI> PointCloud;
+
+geometry_msgs::Pose pose_in;
+sensor_msgs::NavSatFix::ConstPtr gps_msg;
+mavros_msgs::Altitude::ConstPtr alt_msg;
+
+double roll = 0.0, pitch = 0.0, yaw = 0.0;
+double worldx = 0.0, worldy = 0.0, worldz = 0.0;
+int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+
+const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
+
+double from_degrees(double d)
+{
+  return d * M_PI / 180.0;
+}
+
+double to_degrees(double r)
+{
+  return r * 180.0 / M_PI;
+}
+
+void get_time()
+{
+  // current date/time based on current system
+  time_t now = time(0);
+  // char *dt = ctime(&now);
+  // std::cout << "The local date and time is: " << dt << std::endl;
+
+  tm *ltm = localtime(&now);
+  year = 1900 + ltm->tm_year;
+  month = 1 + ltm->tm_mon;
+  day = ltm->tm_mday;
+  hour = ltm->tm_hour;
+  minute = ltm->tm_min;
+  second = ltm->tm_sec;
+}
+
+/* A class to create and write data in a csv file. */
+class CSVWriter
+{
+  std::string fileName;
+  std::string delimeter;
+  int linesCount;
+
+public:
+  CSVWriter(std::string filename, std::string delm = ",") : fileName(filename), delimeter(delm), linesCount(0)
+  {
+  }
+  /*
+	 * Member function to store a range as comma seperated value
+	 */
+  template <typename T>
+  void add_row(T first, T last);
+  void add_section(std::streambuf *str_section);
+};
+
+/*
+ * This Function accepts a range and appends all the elements in the range
+ * to the last row, seperated by delimeter (Default is comma)
+ */
+template <typename T>
+void CSVWriter::add_row(T first, T last)
+{
+  std::fstream file;
+  // Open the file in truncate mode if first line else in Append Mode
+  file.open(fileName, std::ios::out | (linesCount ? std::ios::app : std::ios::trunc));
+
+  // Iterate over the range and add each lement to file seperated by delimeter.
+  for (; first != last;)
+  {
+    file << *first;
+    if (++first != last)
+      file << delimeter;
+  }
+  file << "\n";
+  linesCount++;
+
+  // Close the file
+  file.close();
+}
+
+void CSVWriter::add_section(std::streambuf *str_section)
+{
+  std::fstream file;
+  // Open the file in truncate mode if first line else in Append Mode
+  file.open(fileName, std::ios::out | (linesCount ? std::ios::app : std::ios::trunc));
+
+  // Iterate over the range and add each lement to file seperated by delimeter.
+  file << str_section;
+  linesCount++;
+
+  // Close the file
+  file.close();
+}
+
+// Creating an object of CSVWriter
+CSVWriter gps_writer(GPS_FILENAME);
+
+void getRPY(geometry_msgs::Quaternion qtn_msg)
+{
+  // tf2::Quaternion qtn;
+  // quaternionMsgToTF(qtn_msg, qtn);
+  // tf2::fromMsg(qtn_msg, qtn);
+  tf2::Quaternion qtn = tf2::Quaternion(qtn_msg.x, qtn_msg.y, qtn_msg.z, qtn_msg.w);
+
+  qtn.normalize();
+  tf2::Matrix3x3 m(qtn);
+  m.getRPY(roll, pitch, yaw);
+}
+
+void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+  pose_in = msg->pose;
+  // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
+}
+
+void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
+{
+  // lat = msg->latitude;
+  // lon = msg->longitude;
+  // alt = msg->altitude;
+  // ROS_INFO("GPS Seq: [%d]", msg->header.seq);
+  // ROS_INFO("GPS latitude: [%f], longitude: [%f], altitude: [%f]", msg->latitude, msg->longitude, msg->altitude);
+
+  gps_msg = msg;
+  // ROS_INFO("GPS Seq: [%d]", gps_msg->header.seq);
+  // ROS_INFO("GPS latitude: [%f], longitude: [%f], altitude: [%f]", gps_msg->latitude, gps_msg->longitude, gps_msg->altitude);
+}
+
+void utm_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg)
+{
+  ROS_INFO("UTM Seq: [%d]", msg->header.seq);
+  ROS_INFO("pose: x=%f, y=%f, z=%f", msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+  ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+}
+
+void alt_callback(const mavros_msgs::Altitude::ConstPtr &msg)
+{
+  // ROS_INFO("Alt Seq: [%d]", msg->header.seq);
+  // ROS_INFO("monotonic = %f, amsl = %f, local = %f, relative = %f, terrain = %f, bottom_clearance = %f", msg->monotonic, msg->amsl, msg->local, msg->relative, msg->terrain, msg->bottom_clearance);
+  alt_msg = msg;
+}
+
+typedef struct
+{
+  uint32_t receive_packet_count;
+  uint32_t loss_packet_count;
+  uint64_t last_timestamp;
+} LidarPacketStatistic;
+
+/* for global publisher use */
+// ros::Publisher cloud_pub;
+
+/* for device connect use ----------------------------------------------------------------------- */
+typedef enum
+{
+  kDeviceStateDisconnect = 0,
+  kDeviceStateConnect = 1,
+  kDeviceStateSampling = 2,
+} DeviceState;
+
+typedef struct
+{
+  uint8_t handle;
+  DeviceState device_state;
+  DeviceInfo info;
+  LidarPacketStatistic statistic_info;
+} DeviceItem;
+
+DeviceItem lidars[kMaxLidarCount];
+
+/* user add broadcast code here */
+const char *broadcast_code_list[] = {
+    "000000000000001",
+};
+
+#define BROADCAST_CODE_LIST_SIZE (sizeof(broadcast_code_list) / sizeof(intptr_t))
+
+/* total broadcast code, include broadcast_code_list and commandline input */
+std::vector<std::string> total_broadcast_code;
+
+static void PointCloudConvert(LivoxPoint *p_dpoint, LivoxRawPoint *p_raw_point)
+{
+  p_dpoint->x = p_raw_point->x / 1000.0f;
+  p_dpoint->y = p_raw_point->y / 1000.0f;
+  p_dpoint->z = p_raw_point->z / 1000.0f;
+  p_dpoint->reflectivity = p_raw_point->reflectivity;
+}
+
+void compute_world_xyz(double lidarx, double lidary, double lidarz)
+{
+  tf2::Quaternion qtn;
+  qtn.setRPY(roll, pitch, yaw);
+  qtn.normalize();
+
+  tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse().normalize();
+  worldx = qtn_world.getX();
+  worldy = qtn_world.getY();
+  worldz = qtn_world.getZ();
+}
+
+void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
+{
+  std::cout << "data_num = " << data_num << std::endl;
+  LivoxEthPacket *lidar_pack = data;
+
+  if (!data || !data_num)
+  {
+    return;
+  }
+
+  if (handle >= kMaxLidarCount)
+  {
+    return;
+  }
+
+  if ((lidar_pack->timestamp_type == kTimestampTypeNoSync) ||
+      (lidar_pack->timestamp_type == kTimestampTypePtp) ||
+      (lidar_pack->timestamp_type == kTimestampTypePps))
+  {
+    LidarPacketStatistic *packet_statistic = &lidars[handle].statistic_info;
+    uint64_t cur_timestamp = *((uint64_t *)(lidar_pack->timestamp));
+    int64_t packet_gap = cur_timestamp - packet_statistic->last_timestamp;
+
+    packet_statistic->receive_packet_count++;
+    if (packet_statistic->last_timestamp)
+    {
+      if (packet_gap > PACKET_GAP_MISS_TIME)
+      {
+        packet_statistic->loss_packet_count++;
+        ROS_INFO("%d miss count : %ld %lu %lu %d",
+                 handle, packet_gap,
+                 cur_timestamp, packet_statistic->last_timestamp,
+                 packet_statistic->loss_packet_count);
+      }
+    }
+
+    packet_statistic->last_timestamp = cur_timestamp;
+  }
+
+  LivoxRawPoint *p_point_data = (LivoxRawPoint *)lidar_pack->data;
+  LivoxPoint tmp_point;
+
+  std::stringstream stream;
+  while (data_num)
+  {
+    get_time();
+    PointCloudConvert(&tmp_point, p_point_data);
+
+    // stream << std::setprecision(10) << gps_msg->latitude << ",";
+    // stream << std::setprecision(11) << gps_msg->longitude << ",";
+    // stream << std::setprecision(7) << gps_msg->altitude << ",";
+    // stream << std::setprecision(7) << alt_msg->amsl << ",";
+
+    // roll = from_degrees(110.0);
+    // pitch = from_degrees(20.0);
+    // yaw = from_degrees(30.0);
+
+    compute_world_xyz(tmp_point.x, tmp_point.y, tmp_point.z);
+    stream << std::setprecision(4) << worldx << ",";
+    stream << std::setprecision(4) << worldy << ",";
+    stream << std::setprecision(4) << worldz << ",";
+    // stream << (float)tmp_point.reflectivity << ",";
+
+    stream << year << ",";
+    stream << month << ",";
+    stream << day << ",";
+    stream << hour << ",";
+    stream << minute << ",";
+    stream << second << "\n";
+
+    --data_num;
+    p_point_data++;
+  }
+
+  // gps_writer.add_row(write_arr, write_arr + 12);
+  gps_writer.add_section(stream.rdbuf());
+
+  return;
+}
+
+/** add bd to total_broadcast_code */
+void add_broadcast_code(const char *bd_str)
+{
+  total_broadcast_code.push_back(bd_str);
+}
+
+/** add bd in broadcast_code_list to total_broadcast_code */
+void add_local_broadcast_code(void)
+{
+  for (int i = 0; i < BROADCAST_CODE_LIST_SIZE; ++i)
+  {
+    add_broadcast_code(broadcast_code_list[i]);
+  }
+}
+
+/** add commandline bd to total_broadcast_code */
+void add_commandline_broadcast_code(const char *cammandline_str)
+{
+  char *strs = new char[strlen(cammandline_str) + 1];
+  strcpy(strs, cammandline_str);
+
+  std::string pattern = "&";
+  char *bd_str = strtok(strs, pattern.c_str());
+  while (bd_str != NULL)
+  {
+    ROS_INFO("commandline input bd:%s", bd_str);
+    if (COMMANDLINE_BD_SIZE == strlen(bd_str))
+    {
+      add_broadcast_code(bd_str);
+    }
+    else
+    {
+      ROS_INFO("Invalid bd:%s", bd_str);
+    }
+    bd_str = strtok(NULL, pattern.c_str());
+  }
+
+  delete[] strs;
+}
+
+/** Callback function of starting sampling. */
+void OnSampleCallback(uint8_t status, uint8_t handle, uint8_t response, void *data)
+{
+  ROS_INFO("OnSampleCallback statue %d handle %d response %d", status, handle, response);
+  if (status == kStatusSuccess)
+  {
+    if (response != 0)
+    {
+      lidars[handle].device_state = kDeviceStateConnect;
+    }
+  }
+  else if (status == kStatusTimeout)
+  {
+    lidars[handle].device_state = kDeviceStateConnect;
+  }
+}
+
+/** Callback function of stopping sampling. */
+void OnStopSampleCallback(uint8_t status, uint8_t handle, uint8_t response, void *data)
+{
+}
+
+/** Query the firmware version of Livox LiDAR. */
+void OnDeviceInformation(uint8_t status, uint8_t handle, DeviceInformationResponse *ack, void *data)
+{
+  if (status != kStatusSuccess)
+  {
+    ROS_INFO("Device Query Informations Failed %d", status);
+  }
+  if (ack)
+  {
+    ROS_INFO("firm ver: %d.%d.%d.%d",
+             ack->firmware_version[0],
+             ack->firmware_version[1],
+             ack->firmware_version[2],
+             ack->firmware_version[3]);
+  }
+}
+
+/** Callback function of changing of device state. */
+void OnDeviceChange(const DeviceInfo *info, DeviceEvent type)
+{
+  if (info == NULL)
+  {
+    return;
+  }
+
+  ROS_INFO("OnDeviceChange broadcast code %s update type %d", info->broadcast_code, type);
+
+  uint8_t handle = info->handle;
+  if (handle >= kMaxLidarCount)
+  {
+    return;
+  }
+  if (type == kEventConnect)
+  {
+    QueryDeviceInformation(handle, OnDeviceInformation, NULL);
+    if (lidars[handle].device_state == kDeviceStateDisconnect)
+    {
+      lidars[handle].device_state = kDeviceStateConnect;
+      lidars[handle].info = *info;
+    }
+  }
+  else if (type == kEventDisconnect)
+  {
+    lidars[handle].device_state = kDeviceStateDisconnect;
+  }
+  else if (type == kEventStateChange)
+  {
+    lidars[handle].info = *info;
+  }
+
+  if (lidars[handle].device_state == kDeviceStateConnect)
+  {
+    ROS_INFO("Device State error_code %d", lidars[handle].info.status.status_code);
+    ROS_INFO("Device State working state %d", lidars[handle].info.state);
+    ROS_INFO("Device feature %d", lidars[handle].info.feature);
+    if (lidars[handle].info.state == kLidarStateNormal)
+    {
+      if (lidars[handle].info.type == kDeviceTypeHub)
+      {
+        HubStartSampling(OnSampleCallback, NULL);
+      }
+      else
+      {
+        LidarStartSampling(handle, OnSampleCallback, NULL);
+      }
+      lidars[handle].device_state = kDeviceStateSampling;
+    }
+  }
+}
+
+void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
+{
+  if (info == NULL)
+  {
+    return;
+  }
+
+  ROS_INFO("Receive Broadcast Code %s", info->broadcast_code);
+  bool found = false;
+
+  for (int i = 0; i < total_broadcast_code.size(); ++i)
+  {
+    if (strncmp(info->broadcast_code, total_broadcast_code[i].c_str(), kBroadcastCodeSize) == 0)
+    {
+      found = true;
+      break;
+    }
+  }
+  if (!found)
+  {
+    ROS_INFO("Not in the broacast_code_list, please add it to if want to connect!");
+    return;
+  }
+
+  bool result = false;
+  uint8_t handle = 0;
+  result = AddLidarToConnect(info->broadcast_code, &handle);
+  if (result == kStatusSuccess && handle < kMaxLidarCount)
+  {
+    SetDataCallback(handle, GetLidarData);
+    lidars[handle].handle = handle;
+    lidars[handle].device_state = kDeviceStateDisconnect;
+  }
+}
+
+int main(int argc, char **argv)
+{
+  if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug))
+  {
+    ros::console::notifyLoggerLevelsChanged();
+  }
+
+  ROS_INFO("Livox-SDK ros demo");
+
+  if (!Init())
+  {
+    ROS_FATAL("Livox-SDK init fail!");
+    return -1;
+  }
+
+  add_local_broadcast_code();
+  if (argc >= BD_ARGC_NUM)
+  {
+    ROS_INFO("Commandline input %s", argv[BD_ARGV_POS]);
+    add_commandline_broadcast_code(argv[BD_ARGV_POS]);
+  }
+
+  memset(lidars, 0, sizeof(lidars));
+  SetBroadcastCallback(OnDeviceBroadcast);
+  SetDeviceStateUpdateCallback(OnDeviceChange);
+
+  if (!Start())
+  {
+    Uninit();
+    return -1;
+  }
+
+  /* ros related */
+  ros::init(argc, argv, "livox_lidar_publisher");
+  ros::NodeHandle nh;
+  // cloud_pub = nh.advertise<PointCloud>("livox/lidar", POINTS_PER_FRAME);
+
+  ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
+  ros::Subscriber gps_sub = nh.subscribe<sensor_msgs::NavSatFix>("mavros/global_position/global", 10, gps_callback);
+  ros::Subscriber utm_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("mavros/global_position/local", 10, utm_callback);
+  ros::Subscriber alt_sub = nh.subscribe<mavros_msgs::Altitude>("mavros/altitude", 10, alt_callback);
+
+  ros::Time::init();
+  ros::Rate rate(500); // 500 hz
+  while (ros::ok())
+  {
+    ros::spinOnce();
+    rate.sleep();
+  }
+
+  Uninit();
+}
