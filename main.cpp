@@ -59,7 +59,7 @@
 // typedef pcl::PointCloud<pcl::PointXYZI> PointCloud;
 
 geometry_msgs::Pose pose_in;
-geometry_msgs::Pose pose_in_utm;
+// geometry_msgs::Pose pose_in_utm;
 sensor_msgs::NavSatFix::ConstPtr gps_msg;
 mavros_msgs::Altitude::ConstPtr alt_msg;
 
@@ -67,7 +67,8 @@ double roll = 0.0, pitch = 0.0, yaw = 0.0;
 double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
-const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
+// const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
+const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/ai_drone/data/gps_results.csv";
 
 double from_degrees(double d)
 {
@@ -172,8 +173,7 @@ void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
   pose_in = msg->pose;
   // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
-  ROS_INFO("pose: x=%f, y=%f, z=%f", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-  ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z, msg->pose.orientation.w);
+  ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
 }
 
 void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
@@ -189,13 +189,13 @@ void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
   // ROS_INFO("GPS latitude: [%f], longitude: [%f], altitude: [%f]", gps_msg->latitude, gps_msg->longitude, gps_msg->altitude);
 }
 
-void utm_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg)
-{
-  pose_in_utm = msg->pose.pose;
-  ROS_INFO("UTM Seq: [%d]", msg->header.seq);
-  ROS_INFO("pose utm: x=%f, y=%f, z=%f", msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
-  ROS_INFO("orientation utm: x=%f, y=%f, z=%f, w=%f", msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
-}
+// void utm_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg)
+// {
+//   pose_in_utm = msg->pose.pose;
+//   ROS_INFO("UTM Seq: [%d]", msg->header.seq);
+//   ROS_INFO("pose utm: x=%f, y=%f, z=%f", msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+//   ROS_INFO("orientation utm: x=%f, y=%f, z=%f, w=%f", msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+// }
 
 void alt_callback(const mavros_msgs::Altitude::ConstPtr &msg)
 {
@@ -257,9 +257,9 @@ void compute_world_xyz(double lidarx, double lidary, double lidarz)
   qtn.normalize();
 
   tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse().normalize();
-  worldx = pose_in_utm.position.x + qtn_world.getX();
-  worldy = pose_in_utm.position.y + qtn_world.getY();
-  worldz = pose_in_utm.position.z + qtn_world.getZ();
+  worldx = qtn_world.getX();
+  worldy = qtn_world.getY();
+  worldz = qtn_world.getZ();
 }
 
 void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
@@ -291,10 +291,10 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
       if (packet_gap > PACKET_GAP_MISS_TIME)
       {
         packet_statistic->loss_packet_count++;
-        ROS_INFO("%d miss count : %ld %lu %lu %d",
-                 handle, packet_gap,
-                 cur_timestamp, packet_statistic->last_timestamp,
-                 packet_statistic->loss_packet_count);
+        // ROS_INFO("%d miss count : %ld %lu %lu %d",
+        //          handle, packet_gap,
+        //          cur_timestamp, packet_statistic->last_timestamp,
+        //          packet_statistic->loss_packet_count);
       }
     }
 
@@ -310,20 +310,20 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     get_time();
     PointCloudConvert(&tmp_point, p_point_data);
 
-    // stream << std::setprecision(10) << gps_msg->latitude << ",";
-    // stream << std::setprecision(11) << gps_msg->longitude << ",";
-    // stream << std::setprecision(7) << gps_msg->altitude << ",";
-    // stream << std::setprecision(7) << alt_msg->amsl << ",";
+    stream << std::setprecision(10) << gps_msg->latitude << ",";
+    stream << std::setprecision(11) << gps_msg->longitude << ",";
+    stream << std::setprecision(7) << gps_msg->altitude << ",";
+    stream << std::setprecision(7) << alt_msg->amsl << ",";
 
     // roll = from_degrees(110.0);
     // pitch = from_degrees(20.0);
     // yaw = from_degrees(30.0);
 
-    getRPY(pose_in_utm.orientation);
+    getRPY(pose_in.orientation);
     compute_world_xyz(tmp_point.x, tmp_point.y, tmp_point.z);
-    stream << std::setprecision(11) << worldx << ",";
-    stream << std::setprecision(11) << worldy << ",";
-    stream << std::setprecision(7) << worldz << "\n";
+    stream << std::setprecision(4) << worldx << ",";
+    stream << std::setprecision(4) << worldy << ",";
+    stream << std::setprecision(4) << worldz << "\n";
     // stream << (float)tmp_point.reflectivity << ",";
 
     // stream << year << ",";
@@ -549,7 +549,7 @@ int main(int argc, char **argv)
 
   ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
   ros::Subscriber gps_sub = nh.subscribe<sensor_msgs::NavSatFix>("mavros/global_position/global", 10, gps_callback);
-  ros::Subscriber utm_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("mavros/global_position/local", 10, utm_callback);
+  // ros::Subscriber utm_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("mavros/global_position/local", 10, utm_callback);
   ros::Subscriber alt_sub = nh.subscribe<mavros_msgs::Altitude>("mavros/altitude", 10, alt_callback);
 
   ros::Time::init();
