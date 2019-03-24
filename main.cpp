@@ -323,8 +323,8 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     compute_world_xyz(tmp_point.z, -tmp_point.y, tmp_point.x);
     stream << std::setprecision(4) << worldx << ",";
     stream << std::setprecision(4) << worldy << ",";
-    stream << std::setprecision(4) << worldz << "\n";
-    // stream << (float)tmp_point.reflectivity << ",";
+    stream << std::setprecision(4) << worldz << ",";
+    stream << tmp_point.reflectivity << "\n";
 
     // stream << year << ",";
     // stream << month << ",";
