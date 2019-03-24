@@ -320,7 +320,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     stream << std::setprecision(4) << pose_in.position.z << ",";
 
     getRPY(pose_in.orientation);
-    compute_world_xyz(tmp_point.x, tmp_point.y, tmp_point.z);
+    compute_world_xyz(tmp_point.z, -tmp_point.y, tmp_point.x);
     stream << std::setprecision(4) << worldx << ",";
     stream << std::setprecision(4) << worldy << ",";
     stream << std::setprecision(4) << worldz << "\n";
