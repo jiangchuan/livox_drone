@@ -68,7 +68,7 @@ double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
 // const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
-const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/ai_drone/data/gps_results.csv";
+const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/livox_drone/data/gps_results.csv";
 
 double from_degrees(double d)
 {
@@ -172,7 +172,7 @@ void getRPY(geometry_msgs::Quaternion qtn_msg)
 void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
   pose_in = msg->pose;
-  // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
+  ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
   ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
 }
 
@@ -307,7 +307,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   std::stringstream stream;
   while (data_num)
   {
-    get_time();
+    // get_time();
     PointCloudConvert(&tmp_point, p_point_data);
 
     stream << std::setprecision(10) << gps_msg->latitude << ",";
@@ -315,9 +315,9 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     stream << std::setprecision(7) << gps_msg->altitude << ",";
     stream << std::setprecision(7) << alt_msg->amsl << ",";
 
-    // roll = from_degrees(110.0);
-    // pitch = from_degrees(20.0);
-    // yaw = from_degrees(30.0);
+    stream << std::setprecision(4) << pose_in.position.x << ",";
+    stream << std::setprecision(4) << pose_in.position.y << ",";
+    stream << std::setprecision(4) << pose_in.position.z << ",";
 
     getRPY(pose_in.orientation);
     compute_world_xyz(tmp_point.x, tmp_point.y, tmp_point.z);
