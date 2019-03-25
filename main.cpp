@@ -68,7 +68,8 @@ double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
 // const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
-const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/livox_drone/data/gps_results.csv";
+// const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/livox_drone/data/gps_results.csv";
+const std::string GPS_FILENAME = "/home/pi/livox_data/gps_results.csv";
 
 double from_degrees(double d)
 {
@@ -324,6 +325,9 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     stream << std::setprecision(4) << worldx << ",";
     stream << std::setprecision(4) << worldy << ",";
     stream << std::setprecision(4) << worldz << ",";
+    stream << std::setprecision(4) << tmp_point.x << ",";
+    stream << std::setprecision(4) << tmp_point.y << ",";
+    stream << std::setprecision(4) << tmp_point.z << ",";
     stream << (float)tmp_point.reflectivity << "\n";
 
     // stream << year << ",";
