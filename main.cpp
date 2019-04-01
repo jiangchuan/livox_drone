@@ -30,7 +30,7 @@
 #include <math.h>
 #include <sstream>
 #include <fstream>
-
+#include <sys/stat.h>
 #include <vector>
 
 #include "livox_sdk.h"
@@ -67,9 +67,9 @@ double roll = 0.0, pitch = 0.0, yaw = 0.0;
 double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
-// const std::string GPS_FILENAME = "/home/jiangchuan/catkin_ws/src/livox_drone/data/gps_results.csv";
-// const std::string GPS_FILENAME = "/home/pi/catkin_ws/src/livox_drone/data/gps_results.csv";
-const std::string GPS_FILENAME = "/home/pi/livox_data/gps_results.csv";
+std::string timedir;
+// std::string gps_filename = "/home/jiangchuan/livox_data/gps_results.csv";
+std::string gps_filename = "/home/pi/livox_data/gps_results.csv";
 
 double from_degrees(double d)
 {
@@ -95,6 +95,13 @@ void get_time()
   hour = ltm->tm_hour;
   minute = ltm->tm_min;
   second = ltm->tm_sec;
+}
+
+std::string get_time_str()
+{
+  std::stringstream sstm;
+  sstm << year << "-" << month << "-" << day << "_" << hour << "-" << minute << "-" << second;
+  return sstm.str();
 }
 
 /* A class to create and write data in a csv file. */
@@ -155,8 +162,8 @@ void CSVWriter::add_section(std::streambuf *str_section)
   file.close();
 }
 
-// Creating an object of CSVWriter
-CSVWriter gps_writer(GPS_FILENAME);
+// // Creating an object of CSVWriter
+// CSVWriter gps_writer(GPS_FILENAME);
 
 void getRPY(geometry_msgs::Quaternion qtn_msg)
 {
@@ -179,29 +186,11 @@ void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 
 void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
 {
-  // lat = msg->latitude;
-  // lon = msg->longitude;
-  // alt = msg->altitude;
-  // ROS_INFO("GPS Seq: [%d]", msg->header.seq);
-  // ROS_INFO("GPS latitude: [%f], longitude: [%f], altitude: [%f]", msg->latitude, msg->longitude, msg->altitude);
-
   gps_msg = msg;
-  // ROS_INFO("GPS Seq: [%d]", gps_msg->header.seq);
-  // ROS_INFO("GPS latitude: [%f], longitude: [%f], altitude: [%f]", gps_msg->latitude, gps_msg->longitude, gps_msg->altitude);
 }
-
-// void utm_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg)
-// {
-//   pose_in_utm = msg->pose.pose;
-//   ROS_INFO("UTM Seq: [%d]", msg->header.seq);
-//   ROS_INFO("pose utm: x=%f, y=%f, z=%f", msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
-//   ROS_INFO("orientation utm: x=%f, y=%f, z=%f, w=%f", msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
-// }
 
 void alt_callback(const mavros_msgs::Altitude::ConstPtr &msg)
 {
-  // ROS_INFO("Alt Seq: [%d]", msg->header.seq);
-  // ROS_INFO("monotonic = %f, amsl = %f, local = %f, relative = %f, terrain = %f, bottom_clearance = %f", msg->monotonic, msg->amsl, msg->local, msg->relative, msg->terrain, msg->bottom_clearance);
   alt_msg = msg;
 }
 
@@ -212,8 +201,6 @@ typedef struct
   uint64_t last_timestamp;
 } LidarPacketStatistic;
 
-/* for global publisher use */
-// ros::Publisher cloud_pub;
 
 /* for device connect use ----------------------------------------------------------------------- */
 typedef enum
@@ -251,13 +238,26 @@ static void PointCloudConvert(LivoxPoint *p_dpoint, LivoxRawPoint *p_raw_point)
   p_dpoint->reflectivity = p_raw_point->reflectivity;
 }
 
+// void compute_world_xyz(double lidarx, double lidary, double lidarz)
+// {
+//   tf2::Quaternion qtn;
+//   qtn.setRPY(roll, pitch, yaw);
+//   qtn.normalize();
+//   tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse().normalize();
+//   worldx = qtn_world.getX();
+//   worldy = qtn_world.getY();
+//   worldz = qtn_world.getZ();
+// }
+
 void compute_world_xyz(double lidarx, double lidary, double lidarz)
 {
-  tf2::Quaternion qtn;
-  qtn.setRPY(roll, pitch, yaw);
-  qtn.normalize();
+  // tf2::Quaternion qtn;
+  // qtn.setRPY(roll, pitch, yaw);
 
-  tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse().normalize();
+  tf2::Quaternion qtn = tf2::Quaternion(pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
+  // qtn.normalize();
+  // tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse().normalize();
+  tf2::Quaternion qtn_world = qtn * tf2::Quaternion(lidarx, lidary, lidarz, 0.0) * qtn.inverse();
   worldx = qtn_world.getX();
   worldy = qtn_world.getY();
   worldz = qtn_world.getZ();
@@ -305,43 +305,51 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   LivoxRawPoint *p_point_data = (LivoxRawPoint *)lidar_pack->data;
   LivoxPoint tmp_point;
 
+
+  get_time();
+  std::string time_str = get_time_str();
+  gps_filename = timedir + time_str + ".csv";
+  CSVWriter gps_writer(gps_filename);
+
   std::stringstream stream;
   while (data_num)
   {
-    // get_time();
     PointCloudConvert(&tmp_point, p_point_data);
 
-    stream << std::setprecision(10) << gps_msg->latitude << ",";
-    stream << std::setprecision(11) << gps_msg->longitude << ",";
-    stream << std::setprecision(7) << gps_msg->altitude << ",";
-    stream << std::setprecision(7) << alt_msg->amsl << ",";
+    if (fabs(tmp_point.x) > 1e-6 || fabs(tmp_point.y) > 1e-6 || fabs(tmp_point.z) > 1e-6)
+    {
+      // 3. GPS rod shift
+      stream << std::setprecision(10) << gps_msg->latitude << ",";
+      stream << std::setprecision(11) << gps_msg->longitude << ",";
+      stream << std::setprecision(7) << gps_msg->altitude << ",";
+      stream << std::setprecision(7) << alt_msg->amsl << ",";
 
-    stream << std::setprecision(4) << pose_in.position.x << ",";
-    stream << std::setprecision(4) << pose_in.position.y << ",";
-    stream << std::setprecision(4) << pose_in.position.z << ",";
+      stream << std::setprecision(4) << pose_in.position.x << ",";
+      stream << std::setprecision(4) << pose_in.position.y << ",";
+      stream << std::setprecision(4) << pose_in.position.z << ",";
 
-    getRPY(pose_in.orientation);
-    compute_world_xyz(tmp_point.z, -tmp_point.y, tmp_point.x);
-    stream << std::setprecision(4) << worldx << ",";
-    stream << std::setprecision(4) << worldy << ",";
-    stream << std::setprecision(4) << worldz << ",";
-    stream << std::setprecision(4) << tmp_point.x << ",";
-    stream << std::setprecision(4) << tmp_point.y << ",";
-    stream << std::setprecision(4) << tmp_point.z << ",";
-    stream << (float)tmp_point.reflectivity << "\n";
+      getRPY(pose_in.orientation);
+      compute_world_xyz(tmp_point.z, -tmp_point.y, tmp_point.x);
+      stream << std::setprecision(4) << worldx << ",";
+      stream << std::setprecision(4) << worldy << ",";
+      stream << std::setprecision(4) << worldz << ",";
+      stream << std::setprecision(4) << tmp_point.x << ",";
+      stream << std::setprecision(4) << tmp_point.y << ",";
+      stream << std::setprecision(4) << tmp_point.z << ",";
+      stream << (float)tmp_point.reflectivity << "\n";
 
-    // stream << year << ",";
-    // stream << month << ",";
-    // stream << day << ",";
-    // stream << hour << ",";
-    // stream << minute << ",";
-    // stream << second << "\n";
+      // stream << year << ",";
+      // stream << month << ",";
+      // stream << day << ",";
+      // stream << hour << ",";
+      // stream << minute << ",";
+      // stream << second << "\n";
+    }
 
     --data_num;
     p_point_data++;
   }
 
-  // gps_writer.add_row(write_arr, write_arr + 12);
   gps_writer.add_section(stream.rdbuf());
 
   return;
@@ -516,6 +524,16 @@ void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
 
 int main(int argc, char **argv)
 {
+
+  std::string rootdir = "/home/pi/livox_data/";
+  int status = mkdir(rootdir.c_str(), 0777);
+
+  get_time();
+  std::string time_str = get_time_str();
+
+  timedir = rootdir + time_str + "/";
+  status = mkdir(timedir.c_str(), 0777);
+
   if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug))
   {
     ros::console::notifyLoggerLevelsChanged();
@@ -551,9 +569,12 @@ int main(int argc, char **argv)
   ros::NodeHandle nh;
   // cloud_pub = nh.advertise<PointCloud>("livox/lidar", POINTS_PER_FRAME);
 
+  // TODO: Wait some time for the drone.
+  // Call lidar when in POSITION mode.
+  // Make a new folder of timestamp for each flight
+
   ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
   ros::Subscriber gps_sub = nh.subscribe<sensor_msgs::NavSatFix>("mavros/global_position/global", 10, gps_callback);
-  // ros::Subscriber utm_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("mavros/global_position/local", 10, utm_callback);
   ros::Subscriber alt_sub = nh.subscribe<mavros_msgs::Altitude>("mavros/altitude", 10, alt_callback);
 
   ros::Time::init();
