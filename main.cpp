@@ -1,27 +1,3 @@
-//
-// The MIT License (MIT)
-//
-// Copyright (c) 2019 Livox. All rights reserved.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-//
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -42,24 +18,15 @@
 #include <tf2/LinearMath/Transform.h>
 // #include "tf2_geometry_msgs/tf2_geometry_msgs.h"
 
-// #include <pcl_ros/point_cloud.h>
-
 #include <mavros_msgs/Altitude.h>
-
 #include "sensor_msgs/NavSatFix.h"
 
-#define BUFFER_POINTS (32 * 1024)      // must be 2^n
-#define POINTS_PER_FRAME 5000          // must < BUFFER_POINTS
 #define PACKET_GAP_MISS_TIME (1500000) // 1.5ms
-
 #define BD_ARGC_NUM (4)
 #define BD_ARGV_POS (1)
 #define COMMANDLINE_BD_SIZE (15)
 
-// typedef pcl::PointCloud<pcl::PointXYZI> PointCloud;
-
 geometry_msgs::Pose pose_in;
-// geometry_msgs::Pose pose_in_utm;
 sensor_msgs::NavSatFix::ConstPtr gps_msg;
 mavros_msgs::Altitude::ConstPtr alt_msg;
 
@@ -68,8 +35,8 @@ double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
 std::string timedir;
-// std::string gps_filename = "/home/jiangchuan/livox_data/gps_results.csv";
-std::string gps_filename = "/home/pi/livox_data/gps_results.csv";
+std::string gps_filename;
+int num_records = 0;
 
 double from_degrees(double d)
 {
@@ -162,9 +129,6 @@ void CSVWriter::add_section(std::streambuf *str_section)
   file.close();
 }
 
-// // Creating an object of CSVWriter
-// CSVWriter gps_writer(GPS_FILENAME);
-
 void getRPY(geometry_msgs::Quaternion qtn_msg)
 {
   // tf2::Quaternion qtn;
@@ -200,7 +164,6 @@ typedef struct
   uint32_t loss_packet_count;
   uint64_t last_timestamp;
 } LidarPacketStatistic;
-
 
 /* for device connect use ----------------------------------------------------------------------- */
 typedef enum
@@ -292,10 +255,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
       if (packet_gap > PACKET_GAP_MISS_TIME)
       {
         packet_statistic->loss_packet_count++;
-        // ROS_INFO("%d miss count : %ld %lu %lu %d",
-        //          handle, packet_gap,
-        //          cur_timestamp, packet_statistic->last_timestamp,
-        //          packet_statistic->loss_packet_count);
+        // ROS_INFO("%d miss count : %ld %lu %lu %d", handle, packet_gap, cur_timestamp, packet_statistic->last_timestamp, packet_statistic->loss_packet_count);
       }
     }
 
@@ -305,10 +265,13 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   LivoxRawPoint *p_point_data = (LivoxRawPoint *)lidar_pack->data;
   LivoxPoint tmp_point;
 
+  if (num_records % 100 == 0)
+  {
+    get_time();
+    std::string time_str = get_time_str();
+    gps_filename = timedir + time_str + ".csv";
+  }
 
-  get_time();
-  std::string time_str = get_time_str();
-  gps_filename = timedir + time_str + ".csv";
   CSVWriter gps_writer(gps_filename);
 
   std::stringstream stream;
@@ -337,13 +300,6 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
       stream << std::setprecision(4) << tmp_point.y << ",";
       stream << std::setprecision(4) << tmp_point.z << ",";
       stream << (float)tmp_point.reflectivity << "\n";
-
-      // stream << year << ",";
-      // stream << month << ",";
-      // stream << day << ",";
-      // stream << hour << ",";
-      // stream << minute << ",";
-      // stream << second << "\n";
     }
 
     --data_num;
@@ -351,6 +307,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   }
 
   gps_writer.add_section(stream.rdbuf());
+  num_records++;
 
   return;
 }
@@ -525,6 +482,7 @@ void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
 int main(int argc, char **argv)
 {
 
+  // std::string rootdir = "/home/jiangchuan/livox_data/";
   std::string rootdir = "/home/pi/livox_data/";
   int status = mkdir(rootdir.c_str(), 0777);
 
@@ -533,6 +491,8 @@ int main(int argc, char **argv)
 
   timedir = rootdir + time_str + "/";
   status = mkdir(timedir.c_str(), 0777);
+
+  gps_filename = timedir + time_str + ".csv";
 
   if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug))
   {
@@ -567,7 +527,6 @@ int main(int argc, char **argv)
   /* ros related */
   ros::init(argc, argv, "livox_lidar_publisher");
   ros::NodeHandle nh;
-  // cloud_pub = nh.advertise<PointCloud>("livox/lidar", POINTS_PER_FRAME);
 
   // TODO: Wait some time for the drone.
   // Call lidar when in POSITION mode.
