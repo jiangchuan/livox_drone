@@ -88,6 +88,7 @@ public:
   template <typename T>
   void add_row(T first, T last);
   void add_section(std::streambuf *str_section);
+  void append_section(std::streambuf *str_section);
 };
 
 /*
@@ -129,6 +130,19 @@ void CSVWriter::add_section(std::streambuf *str_section)
   file.close();
 }
 
+void CSVWriter::append_section(std::streambuf *str_section)
+{
+  std::fstream file;
+  // Open the file in truncate mode if first line else in Append Mode
+  file.open(fileName, std::ios::out | std::ios::app);
+
+  // Iterate over the range and add each lement to file seperated by delimeter.
+  file << str_section;
+
+  // Close the file
+  file.close();
+}
+
 void getRPY(geometry_msgs::Quaternion qtn_msg)
 {
   // tf2::Quaternion qtn;
@@ -144,8 +158,8 @@ void getRPY(geometry_msgs::Quaternion qtn_msg)
 void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
   pose_in = msg->pose;
-  ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
-  ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
+  // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
+  // ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
 }
 
 void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
@@ -265,7 +279,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   LivoxRawPoint *p_point_data = (LivoxRawPoint *)lidar_pack->data;
   LivoxPoint tmp_point;
 
-  if (num_records % 100 == 0)
+  if (num_records % 1000 == 0)
   {
     get_time();
     std::string time_str = get_time_str();
@@ -306,8 +320,10 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     p_point_data++;
   }
 
-  gps_writer.add_section(stream.rdbuf());
+  gps_writer.append_section(stream.rdbuf());
   num_records++;
+
+  std::cout << num_records << ": " << gps_filename << std::endl;
 
   return;
 }
