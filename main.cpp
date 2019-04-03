@@ -286,7 +286,7 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     gps_filename = timedir + time_str + ".csv";
   }
 
-  CSVWriter gps_writer(gps_filename);
+  // CSVWriter gps_writer(gps_filename);
 
   std::stringstream stream;
   while (data_num)
@@ -320,10 +320,15 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     p_point_data++;
   }
 
-  gps_writer.append_section(stream.rdbuf());
+  // gps_writer.append_section(stream.rdbuf());
+  std::fstream file;
+  file.open(gps_filename, std::ios::out | std::ios::app);
+  file << stream.rdbuf();
+  file.close();
+
   num_records++;
 
-  std::cout << num_records << ": " << gps_filename << std::endl;
+  // std::cout << num_records << ": " << gps_filename << std::endl;
 
   return;
 }
