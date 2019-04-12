@@ -6,6 +6,11 @@
 	      type="livox_drone_node" required="true"
 	      output="screen" args="$(arg bd_list)"/>
 
+	<!-- <node name="livox_drone_publisher" pkg="livox_drone" 
+	      type="livox_drone_node"
+	      output="screen" args="$(arg bd_list)"/> -->
+
+
 	<!-- <node name="rviz" pkg="rviz" type="rviz" respawn="true"
 	      args="-d $(find livox_drone)/config/display_lidar_points.rviz"/> -->
 </launch>

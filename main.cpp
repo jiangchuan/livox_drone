@@ -28,13 +28,21 @@
 #include "sensor_msgs/NavSatFix.h"
 
 #define ROS_RATE 20
+#define MIN_ARR_LEN 10
 #define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
-#define DRONE_SPEED 3.0
+#define DRONE_SPEED_H 1.5
+#define DRONE_SPEED_V 1.0
 
-#define SCAN_RADIUS 10.0
-#define LAYER_DELTA 5.0
+// #define SCAN_RADIUS 10.0
+#define SCAN_RADIUS 5.0
 
+// #define INITIAL_RISE 10.0
+#define INITIAL_RISE 2.0
 #define DELTA_METERS_V 1.0 // maximum dz
+
+// #define NEAR_DIST 12.0
+// #define NEAR_DIST 1.0
+#define NEAR_DIST 5.0
 
 #define PACKET_GAP_MISS_TIME (1500000) // 1.5ms
 #define BD_ARGC_NUM (4)
@@ -61,9 +69,15 @@ double desty = 0.0;
 double dz = 0.0;
 int travel_time = 0;
 
+float FAR_DIST = (float)(NEAR_DIST + 2.0 * DELTA_METERS_V);
+float mid_dist = (NEAR_DIST + FAR_DIST) / 2.0f;
+
 std::string timedir;
 std::string gps_filename;
 int num_records = 0;
+
+bool initiating = true;
+float min_dist_arr[MIN_ARR_LEN];
 
 double from_degrees(double d)
 {
@@ -96,78 +110,6 @@ std::string get_time_str()
   std::stringstream sstm;
   sstm << year << "-" << month << "-" << day << "_" << hour << "-" << minute << "-" << second;
   return sstm.str();
-}
-
-/* A class to create and write data in a csv file. */
-class CSVWriter
-{
-  std::string fileName;
-  std::string delimeter;
-  int linesCount;
-
-public:
-  CSVWriter(std::string filename, std::string delm = ",") : fileName(filename), delimeter(delm), linesCount(0)
-  {
-  }
-  /*
-	 * Member function to store a range as comma seperated value
-	 */
-  template <typename T>
-  void add_row(T first, T last);
-  void add_section(std::streambuf *str_section);
-  void append_section(std::streambuf *str_section);
-};
-
-/*
- * This Function accepts a range and appends all the elements in the range
- * to the last row, seperated by delimeter (Default is comma)
- */
-template <typename T>
-void CSVWriter::add_row(T first, T last)
-{
-  std::fstream file;
-  // Open the file in truncate mode if first line else in Append Mode
-  file.open(fileName, std::ios::out | (linesCount ? std::ios::app : std::ios::trunc));
-
-  // Iterate over the range and add each lement to file seperated by delimeter.
-  for (; first != last;)
-  {
-    file << *first;
-    if (++first != last)
-      file << delimeter;
-  }
-  file << "\n";
-  linesCount++;
-
-  // Close the file
-  file.close();
-}
-
-void CSVWriter::add_section(std::streambuf *str_section)
-{
-  std::fstream file;
-  // Open the file in truncate mode if first line else in Append Mode
-  file.open(fileName, std::ios::out | (linesCount ? std::ios::app : std::ios::trunc));
-
-  // Iterate over the range and add each lement to file seperated by delimeter.
-  file << str_section;
-  linesCount++;
-
-  // Close the file
-  file.close();
-}
-
-void CSVWriter::append_section(std::streambuf *str_section)
-{
-  std::fstream file;
-  // Open the file in truncate mode if first line else in Append Mode
-  file.open(fileName, std::ios::out | std::ios::app);
-
-  // Iterate over the range and add each lement to file seperated by delimeter.
-  file << str_section;
-
-  // Close the file
-  file.close();
 }
 
 void getRPY(geometry_msgs::Quaternion qtn_msg)
@@ -242,6 +184,61 @@ static void PointCloudConvert(LivoxPoint *p_dpoint, LivoxRawPoint *p_raw_point)
   p_dpoint->reflectivity = p_raw_point->reflectivity;
 }
 
+void init_min_array()
+{
+  initiating = true;
+  for (int i = 0; i < MIN_ARR_LEN; i++)
+  {
+    min_dist_arr[i] = 1e6f + i;
+  }
+  initiating = false;
+  return;
+}
+
+float get_avg_min()
+{
+  float s = 0.0f;
+  for (int i = 0; i < MIN_ARR_LEN; i++)
+  {
+    s += min_dist_arr[i];
+  }
+  return s / MIN_ARR_LEN;
+}
+
+int binarySearch(float a[], float item, int low, int high) // high = n-1
+{
+  if (high <= low)
+  {
+    return (item > a[low]) ? (low + 1) : low;
+  }
+  int mid = (low + high) / 2;
+
+  if (item == a[mid])
+  {
+    return mid + 1;
+  }
+
+  if (item > a[mid])
+  {
+    return binarySearch(a, item, mid + 1, high);
+  }
+  return binarySearch(a, item, low, mid - 1);
+}
+
+void insertSorted(float a[], int n, int index, float item)
+{
+  if (index >= n)
+  {
+    return;
+  }
+  for (int i = n - 1; i > index; i--)
+  {
+    a[i] = a[i - 1];
+  }
+  a[index] = item;
+  return;
+}
+
 // void compute_world_xyz(double lidarx, double lidary, double lidarz)
 // {
 //   tf2::Quaternion qtn;
@@ -313,14 +310,19 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
     gps_filename = timedir + time_str + ".csv";
   }
 
-  // CSVWriter gps_writer(gps_filename);
-
   std::stringstream stream;
   while (data_num)
   {
     PointCloudConvert(&tmp_point, p_point_data);
 
-    if (fabs(tmp_point.x) > 1e-6 || fabs(tmp_point.y) > 1e-6 || fabs(tmp_point.z) > 1e-6)
+    float tmp_pointx_abs = fabs(tmp_point.x);
+    if (tmp_pointx_abs > 1e-6 && !initiating)
+    {
+      int index = binarySearch(min_dist_arr, tmp_point.x, 0, MIN_ARR_LEN - 1);
+      insertSorted(min_dist_arr, MIN_ARR_LEN, index, tmp_point.x);
+    }
+
+    if (tmp_pointx_abs > 1e-6 || fabs(tmp_point.y) > 1e-6 || fabs(tmp_point.z) > 1e-6)
     {
       // 3. GPS rod shift
       stream << std::setprecision(10) << gps_msg->latitude << ",";
@@ -544,18 +546,46 @@ void delta_position(double dx, double dy, double dz)
   pose_stamped.pose.position.z += dz;
 }
 
+void printArr()
+{
+  printf("min_array = ");
+  for (int i = 0; i < MIN_ARR_LEN; i++)
+  {
+    printf("%g  ", min_dist_arr[i]);
+  }
+  printf("\n");
+}
+
+double get_travel_dz(double increment_z)
+{
+  float wire_dist = get_avg_min();
+  if (wire_dist < NEAR_DIST) // Too close
+  {
+    return -increment_z;
+  }
+  if (wire_dist < FAR_DIST) // Middle
+  {
+    return (double)(wire_dist - mid_dist);
+  }
+  return increment_z; // Too far
+}
+
 int get_travel_params(int curr_loc)
 {
+  double increment_z = 0.0;
   if (curr_loc == -1)
   {
-    dz = DELTA_METERS_V / 2.0;
+    increment_z = DELTA_METERS_V / 2.0;
     travel_time = diameter_time / 2;
   }
   else
   {
-    dz = DELTA_METERS_V;
+    increment_z = DELTA_METERS_V;
     travel_time = diameter_time;
   }
+  printArr();
+  dz = get_travel_dz(increment_z);
+  std::cout << "Delta Z = " << dz << std::endl;
 
   switch (curr_loc)
   {
@@ -598,21 +628,72 @@ int get_travel_params(int curr_loc)
   return curr_loc;
 }
 
+void delta_orientation(double droll, double dpitch, double dyaw)
+{
+  tf2::Quaternion delta_qtn;
+  delta_qtn.setRPY(droll, dpitch, dyaw);
+
+  // tf2::Quaternion qtn;
+  // quaternionMsgToTF(pose_stamped.pose.orientation, qtn);
+  // tf2::fromMsg(pose_stamped.pose.orientation, qtn);
+
+  geometry_msgs::Quaternion orn = pose_stamped.pose.orientation;
+  tf2::Quaternion qtn = tf2::Quaternion(orn.x, orn.y, orn.z, orn.w);
+
+  qtn = delta_qtn * qtn;
+  qtn.normalize();
+  // quaternionTFToMsg(qtn, pose_stamped.pose.orientation);
+  // pose_stamped.pose.orientation = tf2::toMsg(qtn);
+  pose_stamped.pose.orientation.w = qtn.getW();
+  pose_stamped.pose.orientation.x = qtn.getX();
+  pose_stamped.pose.orientation.y = qtn.getY();
+  pose_stamped.pose.orientation.z = qtn.getZ();
+}
+
+// Manual: MANUAL
+// Return: AUTO.RTL
+// AUTO_MISSION
+// Hold: AUTO.LOITER
+// Stabilized: STABILIZED
+// Altitude: ALTCTL
+// Follow Me: AUTO.FOLLOW_TARGET
 int main(int argc, char **argv)
 {
-  // // std::string rootdir = "/home/jiangchuan/livox_data/";
-  // std::string rootdir = "/home/pi/livox_data/";
-  // int status = mkdir(rootdir.c_str(), 0777);
-  // get_time();
-  // std::string time_str = get_time_str();
-  // timedir = rootdir + time_str + "/";
-  // status = mkdir(timedir.c_str(), 0777);
-  // gps_filename = timedir + time_str + ".csv";
+  init_min_array();
 
-  // if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug))
-  // {
-  //   ros::console::notifyLoggerLevelsChanged();
-  // }
+  /* Prepare GPS csv File STARTS */
+  // std::string rootdir = "/home/jiangchuan/livox_data/";
+  std::string rootdir = "/home/pi/livox_data/";
+  int status = mkdir(rootdir.c_str(), 0777);
+  get_time();
+  std::string time_str = get_time_str();
+  timedir = rootdir + time_str + "/";
+  status = mkdir(timedir.c_str(), 0777);
+  gps_filename = timedir + time_str + ".csv";
+  /* Prepare GPS csv File ENDS */
+
+  /* Start Livox */
+  if (!Init())
+  {
+    ROS_FATAL("Livox-SDK init fail, trying to land");
+    return -1;
+  }
+  add_local_broadcast_code();
+  if (argc >= BD_ARGC_NUM)
+  {
+    ROS_INFO("Commandline input %s", argv[BD_ARGV_POS]);
+    add_commandline_broadcast_code(argv[BD_ARGV_POS]);
+  }
+  memset(lidars, 0, sizeof(lidars));
+  SetBroadcastCallback(OnDeviceBroadcast);
+  SetDeviceStateUpdateCallback(OnDeviceChange);
+  if (!Start())
+  {
+    ROS_INFO("Livox not started, trying to land");
+    Uninit();
+    return -1;
+  }
+  /* Start Livox Ends*/
 
   /* ros related */
   ros::init(argc, argv, "livox_lidar_publisher");
@@ -631,7 +712,7 @@ int main(int argc, char **argv)
   ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
   ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
 
-  ros::Time::init();
+  // ros::Time::init();
   //the setpoint publishing rate MUST be faster than 2Hz
   ros::Rate rate((double)ROS_RATE);
 
@@ -643,15 +724,6 @@ int main(int argc, char **argv)
     ROS_INFO("connecting to FCU ...");
   }
 
-  // // wait for position mode
-  // while (ros::ok() && current_state.mode != "POSCTL")
-  // {
-  //     // std::cout << current_state.mode << std::endl;
-  //     ros::spinOnce();
-  //     rate.sleep();
-  //     ROS_INFO("waiting for position mode ...");
-  // }
-
   // wait for local position feed
   while (ros::ok() && no_position_yet())
   {
@@ -659,31 +731,6 @@ int main(int argc, char **argv)
     rate.sleep();
     ROS_INFO("getting local position ...");
   }
-
-  // /* Start Livox */
-  // if (!Init())
-  // {
-  //   ROS_FATAL("Livox-SDK init fail!");
-  //   return -1;
-  // }
-
-  // add_local_broadcast_code();
-  // if (argc >= BD_ARGC_NUM)
-  // {
-  //   ROS_INFO("Commandline input %s", argv[BD_ARGV_POS]);
-  //   add_commandline_broadcast_code(argv[BD_ARGV_POS]);
-  // }
-
-  // memset(lidars, 0, sizeof(lidars));
-  // SetBroadcastCallback(OnDeviceBroadcast);
-  // SetDeviceStateUpdateCallback(OnDeviceChange);
-
-  // if (!Start())
-  // {
-  //   Uninit();
-  //   return -1;
-  // }
-  // /* Start Livox Ends*/
 
   pose_stamped.pose = pose_in;
 
@@ -735,7 +782,7 @@ int main(int argc, char **argv)
     rate.sleep();
   }
 
-  // stay at 0.5m for 5 seconds
+  // stay at 1 m for 2 seconds
   int n_wait_sec = 2;
   ROS_INFO("stay at origin for %d seconds", n_wait_sec);
   delta_position(0.0, 0.0, 1);
@@ -745,6 +792,35 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+
+  // Initial rise 10 m
+  int rise_time = (int)(INITIAL_RISE / DRONE_SPEED_V);
+  int num_updates = rise_time * ROS_RATE / UPDATE_JUMP;
+  double idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
+  for (int i = 0; i < num_updates; i++)
+  {
+    std::cout << "Initial rise: " << i << std::endl;
+    delta_position(0.0, 0.0, idz);
+    for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
+    {
+      local_pos_pub.publish(pose_stamped);
+      ros::spinOnce();
+      rate.sleep();
+    }
+
+    printArr();
+    if (get_avg_min() < mid_dist)
+    {
+      break;
+    }
+    std::cout << "Initial rise delta Z = " << dz << std::endl;
+  }
+
+  mavros_msgs::CommandTOL land_cmd;
+  land_cmd.request.yaw = 0.0f;
+  land_cmd.request.latitude = 0.0f;
+  land_cmd.request.longitude = 0.0f;
+  land_cmd.request.altitude = 0.0f;
 
   // Mission starts here
   getRPY(pose_in.orientation); // Get yaw
@@ -770,21 +846,21 @@ int main(int argc, char **argv)
   c4x = e2x - radius_cos;
   c4y = e2y - radius_sin;
 
-  // diameter_time = (int)(std::max(1.0, SCAN_RADIUS / DRONE_SPEED)) * 2; // Constant
-  diameter_time = (int)(M_PI * SCAN_RADIUS / DRONE_SPEED);
+  diameter_time = (int)(M_PI * SCAN_RADIUS / DRONE_SPEED_H);
 
   /*  O -> E1 -> {C2 -> C3 -> C4 -> C1} -> {C2 -> C3 -> C4 -> C1} */
   /* -1 ->  0 -> { 2 ->  3 ->  4 ->  1} -> { 2 ->  3 ->  4 ->  1} */
 
   int curr_loc = -1;
 
-  for (int i = 0; i < 20; i++)
+  for (int i = 0; i < 10; i++)
   {
     std::cout << curr_loc << " -> ";
     curr_loc = get_travel_params(curr_loc);
     std::cout << curr_loc << std::endl;
 
-    // travel2next() starts
+    init_min_array();
+
     double dxr = (destx - pose_in.position.x) / 2.0;
     double dyr = (desty - pose_in.position.y) / 2.0;
     int num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
@@ -803,14 +879,7 @@ int main(int argc, char **argv)
         rate.sleep();
       }
     }
-    // travel2next() ends
   }
-
-  mavros_msgs::CommandTOL land_cmd;
-  land_cmd.request.yaw = 0.0f;
-  land_cmd.request.latitude = 0.0f;
-  land_cmd.request.longitude = 0.0f;
-  land_cmd.request.altitude = 0.0f;
 
   ROS_INFO("tring to land");
   while (ros::ok())
@@ -829,13 +898,6 @@ int main(int argc, char **argv)
     rate.sleep();
   }
 
-  //Manual: MANUAL
-  //Return: AUTO.RTL
-  //AUTO_MISSION
-  //Hold: AUTO.LOITER
-  //Stabilized: STABILIZED
-  //Altitude: ALTCTL
-  //Follow Me: AUTO.FOLLOW_TARGET
-
-  // Uninit();
+  Uninit();
+  return 0;
 }
