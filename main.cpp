@@ -28,8 +28,11 @@
 #include "sensor_msgs/NavSatFix.h"
 
 #define ROS_RATE 20
-#define MIN_ARR_LEN 10
+#define MIN_ARR_LEN 5
 #define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
+#define MAX_SCAN_SEG 20
+#define MAX_MID_SCAN_SEG 8
+
 #define DRONE_SPEED_H 1.5
 #define DRONE_SPEED_V 1.0
 
@@ -71,6 +74,7 @@ int travel_time = 0;
 
 float FAR_DIST = (float)(NEAR_DIST + 2.0 * DELTA_METERS_V);
 float mid_dist = (NEAR_DIST + FAR_DIST) / 2.0f;
+int in_mid_count = 0;
 
 std::string timedir;
 std::string gps_filename;
@@ -565,6 +569,7 @@ double get_travel_dz(double increment_z)
   }
   if (wire_dist < FAR_DIST) // Middle
   {
+    in_mid_count++;
     return (double)(wire_dist - mid_dist);
   }
   return increment_z; // Too far
@@ -626,6 +631,22 @@ int get_travel_params(int curr_loc)
     break;
   }
   return curr_loc;
+}
+
+double compute_dist_latlon(double lat1, double long1, double lat2, double long2)
+{
+  double dlat1 = from_degrees(lat1);
+  double dlong1 = from_degrees(long1);
+  double dlat2 = from_degrees(lat2);
+  double dlong2 = from_degrees(long2);
+  double dLong = dlong1 - dlong2;
+  double dLat = dlat1 - dlat2;
+  double aHarv = pow(sin(dLat / 2.0), 2.0) + cos(lat1) * cos(lat2) * pow(sin(dLong / 2), 2);
+  double cHarv = 2 * atan2(sqrt(aHarv), sqrt(1.0 - aHarv));
+  // Earth's radius from wikipedia varies between 6,356.750 km — 6,378.135 km (˜3,949.901 — 3,963.189 miles)
+  // The IUGG value for the equatorial radius of the Earth is 6378.137 km (3963.19 mile)
+  const double earth = 6378137; // meters
+  return earth * cHarv;
 }
 
 void delta_orientation(double droll, double dpitch, double dyaw)
@@ -699,9 +720,7 @@ int main(int argc, char **argv)
   ros::init(argc, argv, "livox_lidar_publisher");
   ros::NodeHandle nh;
 
-  // TODO: Wait some time for the drone.
-  // Call lidar when in POSITION mode.
-  // Make a new folder of timestamp for each flight
+  // TODO: Compensate GPS rod
 
   ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_callback);
   ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
@@ -734,12 +753,40 @@ int main(int argc, char **argv)
 
   pose_stamped.pose = pose_in;
 
+  double sum_x = 0.0;
+  double sum_y = 0.0;
+  // int n_setpts = 100;
+  int n_setpts = 40;
   //send a few setpoints before starting
-  for (int i = 100; ros::ok() && i > 0; --i)
+  for (int i = 0; ros::ok() && i < n_setpts; i++)
   {
+    sum_x += pose_in.position.x;
+    sum_y += pose_in.position.y;
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
+  }
+  double x0 = sum_x / n_setpts;
+  double y0 = sum_y / n_setpts;
+
+  std::cout << "One time loc: x = " << pose_stamped.pose.position.x << ", y = " << pose_stamped.pose.position.y << std::endl;
+  std::cout << "Avg time loc: x = " << x0 << ", y = " << y0 << std::endl;
+
+  if (fabs(x0 - pose_stamped.pose.position.x) > 2.0)
+  {
+    x0 = pose_stamped.pose.position.x;
+  }
+  else
+  {
+    pose_stamped.pose.position.x = x0;
+  }
+  if (fabs(y0 - pose_stamped.pose.position.y) > 2.0)
+  {
+    y0 = pose_stamped.pose.position.y;
+  }
+  else
+  {
+    pose_stamped.pose.position.y = y0;
   }
 
   // change to offboard mode
@@ -748,7 +795,7 @@ int main(int argc, char **argv)
   ros::Time last_request = ros::Time::now();
   while (ros::ok() && current_state.mode != "OFFBOARD")
   {
-    if (ros::Time::now() - last_request > ros::Duration(5.0))
+    if (ros::Time::now() - last_request > ros::Duration(1.0))
     {
       ROS_INFO(current_state.mode.c_str());
       if (set_mode_client.call(offb_set_mode) &&
@@ -761,6 +808,7 @@ int main(int argc, char **argv)
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
+    ROS_INFO("setting offboard mode ...");
   }
 
   // arm
@@ -768,7 +816,7 @@ int main(int argc, char **argv)
   arm_cmd.request.value = true;
   while (ros::ok() && !current_state.armed)
   {
-    if (ros::Time::now() - last_request > ros::Duration(5.0))
+    if (ros::Time::now() - last_request > ros::Duration(1.0))
     {
       if (arming_client.call(arm_cmd) &&
           arm_cmd.response.success)
@@ -780,12 +828,13 @@ int main(int argc, char **argv)
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
+    ROS_INFO("arming ...");
   }
 
-  // stay at 1 m for 2 seconds
-  int n_wait_sec = 2;
+  // stay at 1 m for 1 seconds
+  int n_wait_sec = 1;
   ROS_INFO("stay at origin for %d seconds", n_wait_sec);
-  delta_position(0.0, 0.0, 1);
+  delta_position(0.0, 0.0, 1.0);
   for (int i = 0; ros::ok() && i < n_wait_sec * ROS_RATE; i++)
   {
     local_pos_pub.publish(pose_stamped);
@@ -794,12 +843,13 @@ int main(int argc, char **argv)
   }
 
   // Initial rise 10 m
+  ROS_INFO("Initial rise for %g meters", INITIAL_RISE);
   int rise_time = (int)(INITIAL_RISE / DRONE_SPEED_V);
   int num_updates = rise_time * ROS_RATE / UPDATE_JUMP;
   double idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
   for (int i = 0; i < num_updates; i++)
   {
-    std::cout << "Initial rise: " << i << std::endl;
+    // std::cout << "Initial rise: " << i << std::endl;
     delta_position(0.0, 0.0, idz);
     for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
     {
@@ -808,12 +858,12 @@ int main(int argc, char **argv)
       rate.sleep();
     }
 
-    printArr();
+    // printArr();
     if (get_avg_min() < mid_dist)
     {
       break;
     }
-    std::cout << "Initial rise delta Z = " << dz << std::endl;
+    // std::cout << "Initial rise delta Z = " << dz << std::endl;
   }
 
   mavros_msgs::CommandTOL land_cmd;
@@ -825,9 +875,6 @@ int main(int argc, char **argv)
   // Mission starts here
   getRPY(pose_in.orientation); // Get yaw
   ROS_INFO("  >>> INITIAL yaw = %1.1f degrees", to_degrees(yaw));
-
-  double x0 = pose_stamped.pose.position.x;
-  double y0 = pose_stamped.pose.position.y;
 
   double radius_sin = SCAN_RADIUS * sin(yaw);
   double radius_cos = SCAN_RADIUS * cos(yaw);
@@ -850,11 +897,13 @@ int main(int argc, char **argv)
 
   /*  O -> E1 -> {C2 -> C3 -> C4 -> C1} -> {C2 -> C3 -> C4 -> C1} */
   /* -1 ->  0 -> { 2 ->  3 ->  4 ->  1} -> { 2 ->  3 ->  4 ->  1} */
-
+  ROS_INFO("Begin SZ scan >>>");
   int curr_loc = -1;
 
-  for (int i = 0; i < 10; i++)
+  int iseg = 0;
+  while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
   {
+    iseg++;
     std::cout << curr_loc << " -> ";
     curr_loc = get_travel_params(curr_loc);
     std::cout << curr_loc << std::endl;
@@ -878,6 +927,54 @@ int main(int argc, char **argv)
         ros::spinOnce();
         rate.sleep();
       }
+    }
+  }
+
+  // Return to initial point
+  ROS_INFO("Return to initial point");
+  double increment_z = 0.0;
+  increment_z = DELTA_METERS_V / 2.0;
+  travel_time = diameter_time / sqrt(2);
+  printArr();
+  dz = get_travel_dz(increment_z);
+  std::cout << "Delta Z = " << dz << std::endl;
+  destx = x0;
+  desty = y0;
+  init_min_array();
+  double dxr = (destx - pose_in.position.x) / 2.0;
+  double dyr = (desty - pose_in.position.y) / 2.0;
+  num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
+  double dtheta = M_PI / (double)num_updates;
+  idz = dz / (double)num_updates;
+  for (int i = 0; i < num_updates; i++)
+  {
+    double cos_coef = cos(dtheta * i) - cos(dtheta * (i + 1));
+    double idx = dxr * cos_coef;
+    double idy = dyr * cos_coef;
+    delta_position(idx, idy, idz);
+    for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
+    {
+      local_pos_pub.publish(pose_stamped);
+      ros::spinOnce();
+      rate.sleep();
+    }
+  }
+
+  // Final drop 1 m to make sure it returns to x0, y0
+  ROS_INFO("Final drop 1 m to make sure it returns to x0, y0");
+  int drop_time = (int)(DELTA_METERS_V / DRONE_SPEED_V);
+  num_updates = drop_time * ROS_RATE / UPDATE_JUMP;
+  idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
+  pose_stamped.pose.position.x = x0;
+  pose_stamped.pose.position.y = y0;
+  for (int i = 0; i < num_updates; i++)
+  {
+    pose_stamped.pose.position.z -= idz;
+    for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
+    {
+      local_pos_pub.publish(pose_stamped);
+      ros::spinOnce();
+      rate.sleep();
     }
   }
 
