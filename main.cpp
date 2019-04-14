@@ -268,6 +268,16 @@ void compute_world_xyz(double lidarx, double lidary, double lidarz)
   worldz = qtn_world.getZ();
 }
 
+void string_to_file(std::string filename, std::string str)
+{
+  std::stringstream stream;
+  stream << str;
+  std::fstream file;
+  file.open(filename, std::ios::out | std::ios::app);
+  file << stream.rdbuf();
+  file.close();
+}
+
 void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
 {
   // std::cout << "data_num = " << data_num << std::endl;
@@ -682,7 +692,7 @@ int main(int argc, char **argv)
 {
   init_min_array();
 
-  /* Prepare GPS csv File STARTS */
+  /* Prepare GPS csv file and log txt file starts */
   // std::string rootdir = "/home/jiangchuan/livox_data/";
   std::string rootdir = "/home/pi/livox_data/";
   int status = mkdir(rootdir.c_str(), 0777);
@@ -691,7 +701,13 @@ int main(int argc, char **argv)
   timedir = rootdir + time_str + "/";
   status = mkdir(timedir.c_str(), 0777);
   gps_filename = timedir + time_str + ".csv";
-  /* Prepare GPS csv File ENDS */
+  std::string log_filename = timedir + time_str + ".txt";
+  /* Prepare GPS csv file and log txt file ends */
+
+  std::cout << "Start sleep" << std::endl;
+  sleep(20);
+  std::cout << "Woke up" << std::endl;
+  string_to_file(log_filename, "Woke up after 20 seconds\n");
 
   /* Start Livox */
   if (!Init())
@@ -715,6 +731,8 @@ int main(int argc, char **argv)
     return -1;
   }
   /* Start Livox Ends*/
+
+  string_to_file(log_filename, "Finished starting Livox lidar\n");
 
   /* ros related */
   ros::init(argc, argv, "livox_lidar_publisher");
@@ -743,6 +761,8 @@ int main(int argc, char **argv)
     ROS_INFO("connecting to FCU ...");
   }
 
+  string_to_file(log_filename, "Connected to flight control unit\n");
+
   // wait for local position feed
   while (ros::ok() && no_position_yet())
   {
@@ -750,6 +770,8 @@ int main(int argc, char **argv)
     rate.sleep();
     ROS_INFO("getting local position ...");
   }
+
+  string_to_file(log_filename, "Got position feed\n");
 
   pose_stamped.pose = pose_in;
 
@@ -766,6 +788,8 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+  string_to_file(log_filename, "Sent a few setpoints bofore starting\n");
+
   double x0 = sum_x / n_setpts;
   double y0 = sum_y / n_setpts;
 
@@ -795,7 +819,7 @@ int main(int argc, char **argv)
   ros::Time last_request = ros::Time::now();
   while (ros::ok() && current_state.mode != "OFFBOARD")
   {
-    if (ros::Time::now() - last_request > ros::Duration(1.0))
+    if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
       ROS_INFO(current_state.mode.c_str());
       if (set_mode_client.call(offb_set_mode) &&
@@ -808,15 +832,17 @@ int main(int argc, char **argv)
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
-    ROS_INFO("setting offboard mode ...");
+    // ROS_INFO("setting offboard mode ...");
   }
+
+  string_to_file(log_filename, "Engaged offboard mode\n");
 
   // arm
   mavros_msgs::CommandBool arm_cmd;
   arm_cmd.request.value = true;
   while (ros::ok() && !current_state.armed)
   {
-    if (ros::Time::now() - last_request > ros::Duration(1.0))
+    if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
       if (arming_client.call(arm_cmd) &&
           arm_cmd.response.success)
@@ -828,12 +854,13 @@ int main(int argc, char **argv)
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
-    ROS_INFO("arming ...");
+    // ROS_INFO("arming ...");
   }
+  string_to_file(log_filename, "Armed\n");
 
-  // stay at 1 m for 1 seconds
+  // stay at 1 m for 1 second
   int n_wait_sec = 1;
-  ROS_INFO("stay at origin for %d seconds", n_wait_sec);
+  ROS_INFO("stayed at origin for %d seconds", n_wait_sec);
   delta_position(0.0, 0.0, 1.0);
   for (int i = 0; ros::ok() && i < n_wait_sec * ROS_RATE; i++)
   {
@@ -841,6 +868,7 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+  string_to_file(log_filename, "Stay at 1 m for 1 second\n");
 
   // Initial rise 10 m
   ROS_INFO("Initial rise for %g meters", INITIAL_RISE);
@@ -865,6 +893,7 @@ int main(int argc, char **argv)
     }
     // std::cout << "Initial rise delta Z = " << dz << std::endl;
   }
+  string_to_file(log_filename, "Completed initial rise\n");
 
   mavros_msgs::CommandTOL land_cmd;
   land_cmd.request.yaw = 0.0f;
@@ -929,6 +958,7 @@ int main(int argc, char **argv)
       }
     }
   }
+  string_to_file(log_filename, "Completed periodic flight\n");
 
   // Return to initial point
   ROS_INFO("Return to initial point");
@@ -959,6 +989,7 @@ int main(int argc, char **argv)
       rate.sleep();
     }
   }
+  string_to_file(log_filename, "Returned to initial point\n");
 
   // Final drop 1 m to make sure it returns to x0, y0
   ROS_INFO("Final drop 1 m to make sure it returns to x0, y0");
@@ -977,6 +1008,7 @@ int main(int argc, char **argv)
       rate.sleep();
     }
   }
+  string_to_file(log_filename, "Dropped 1 meter to return to x0, y0\n");
 
   ROS_INFO("tring to land");
   while (ros::ok())
@@ -994,7 +1026,10 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+  string_to_file(log_filename, "Loaded\n");
 
   Uninit();
+  string_to_file(log_filename, "Uninit Livox lidar done\n");
+
   return 0;
 }
