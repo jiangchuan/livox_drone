@@ -706,7 +706,7 @@ int main(int argc, char **argv)
 
   std::cout << "Start sleep" << std::endl;
   sleep(20);
-  std::cout << "Woke up" << std::endl;
+  std::cout << "Woke up after 20 seconds" << std::endl;
   string_to_file(log_filename, "Woke up after 20 seconds\n");
 
   /* Start Livox */
@@ -732,12 +732,14 @@ int main(int argc, char **argv)
   }
   /* Start Livox Ends*/
 
+  std::cout << "Finished starting Livox lidar" << std::endl;
   string_to_file(log_filename, "Finished starting Livox lidar\n");
 
   /* ros related */
   ros::init(argc, argv, "livox_lidar_publisher");
   ros::NodeHandle nh;
 
+  std::cout << "Initiated ROS" << std::endl;
   string_to_file(log_filename, "Initiated ROS\n");
 
   // TODO: Compensate GPS rod
@@ -751,6 +753,7 @@ int main(int argc, char **argv)
   ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
   ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
 
+  std::cout << "Declared ROS Subscribers and ServiceClients" << std::endl;
   string_to_file(log_filename, "Declared ROS Subscribers and ServiceClients\n");
 
   // ros::Time::init();
@@ -765,6 +768,7 @@ int main(int argc, char **argv)
     ROS_INFO("connecting to FCU ...");
   }
 
+  std::cout << "Connected to flight control unit" << std::endl;
   string_to_file(log_filename, "Connected to flight control unit\n");
 
   // wait for local position feed
@@ -775,6 +779,7 @@ int main(int argc, char **argv)
     ROS_INFO("getting local position ...");
   }
 
+  std::cout << "Got position feed" << std::endl;
   string_to_file(log_filename, "Got position feed\n");
 
   pose_stamped.pose = pose_in;
@@ -792,6 +797,8 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+
+  std::cout << "Sent a few setpoints bofore starting" << std::endl;
   string_to_file(log_filename, "Sent a few setpoints bofore starting\n");
 
   double x0 = sum_x / n_setpts;
@@ -839,6 +846,7 @@ int main(int argc, char **argv)
     // ROS_INFO("setting offboard mode ...");
   }
 
+  std::cout << "Engaged offboard mode" << std::endl;
   string_to_file(log_filename, "Engaged offboard mode\n");
 
   // arm
@@ -860,6 +868,7 @@ int main(int argc, char **argv)
     rate.sleep();
     // ROS_INFO("arming ...");
   }
+  std::cout << "Armed" << std::endl;
   string_to_file(log_filename, "Armed\n");
 
   // stay at 1 m for 1 second
@@ -872,6 +881,7 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
   }
+  std::cout << "Stay at 1 m for 1 second" << std::endl;
   string_to_file(log_filename, "Stay at 1 m for 1 second\n");
 
   // Initial rise 10 m
@@ -897,6 +907,7 @@ int main(int argc, char **argv)
     }
     // std::cout << "Initial rise delta Z = " << dz << std::endl;
   }
+  std::cout << "Completed initial rise" << std::endl;
   string_to_file(log_filename, "Completed initial rise\n");
 
   mavros_msgs::CommandTOL land_cmd;
