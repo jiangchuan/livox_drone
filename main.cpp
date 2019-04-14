@@ -738,6 +738,8 @@ int main(int argc, char **argv)
   ros::init(argc, argv, "livox_lidar_publisher");
   ros::NodeHandle nh;
 
+  string_to_file(log_filename, "Initiated ROS\n");
+
   // TODO: Compensate GPS rod
 
   ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_callback);
@@ -748,6 +750,8 @@ int main(int argc, char **argv)
   ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
   ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
   ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
+
+  string_to_file(log_filename, "Declared ROS Subscribers and ServiceClients\n");
 
   // ros::Time::init();
   //the setpoint publishing rate MUST be faster than 2Hz
