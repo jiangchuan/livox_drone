@@ -704,10 +704,6 @@ int main(int argc, char **argv)
   std::string log_filename = timedir + time_str + ".txt";
   /* Prepare GPS csv file and log txt file ends */
 
-  std::cout << "Start sleep" << std::endl;
-  sleep(20);
-  std::cout << "Woke up after 20 seconds" << std::endl;
-  string_to_file(log_filename, "Woke up after 20 seconds\n");
 
   /* Start Livox */
   if (!Init())
@@ -766,6 +762,7 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
     ROS_INFO("connecting to FCU ...");
+    string_to_file(log_filename, "connecting to FCU ...\n");
   }
 
   std::cout << "Connected to flight control unit" << std::endl;
@@ -777,6 +774,7 @@ int main(int argc, char **argv)
     ros::spinOnce();
     rate.sleep();
     ROS_INFO("getting local position ...");
+    string_to_file(log_filename, "getting local position ...\n");
   }
 
   std::cout << "Got position feed" << std::endl;
@@ -786,8 +784,8 @@ int main(int argc, char **argv)
 
   double sum_x = 0.0;
   double sum_y = 0.0;
-  // int n_setpts = 100;
-  int n_setpts = 40;
+  int n_setpts = 100;
+  // int n_setpts = 40;
   //send a few setpoints before starting
   for (int i = 0; ros::ok() && i < n_setpts; i++)
   {
