@@ -528,10 +528,7 @@ void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
 
 void state_callback(const mavros_msgs::State::ConstPtr &msg)
 {
-  if (msg)
-  {
     current_state = *msg;
-  }
 }
 
 void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
@@ -774,8 +771,8 @@ int main(int argc, char **argv)
   {
     ros::spinOnce();
     rate.sleep();
-    ROS_INFO("connecting to FCU ...");
-    string_to_file(log_filename, "connecting to FCU ...\n");
+    // ROS_INFO("connecting to FCU ...");
+    // string_to_file(log_filename, "connecting to FCU ...\n");
   }
 
   std::cout << "Connected to flight control unit" << std::endl;
