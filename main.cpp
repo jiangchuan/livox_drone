@@ -128,23 +128,6 @@ void getRPY(geometry_msgs::Quaternion qtn_msg)
   m.getRPY(roll, pitch, yaw);
 }
 
-void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
-{
-  pose_in = msg->pose;
-  // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
-  // ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
-}
-
-void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
-{
-  gps_msg = msg;
-}
-
-void alt_callback(const mavros_msgs::Altitude::ConstPtr &msg)
-{
-  alt_msg = msg;
-}
-
 typedef struct
 {
   uint32_t receive_packet_count;
@@ -545,7 +528,36 @@ void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
 
 void state_callback(const mavros_msgs::State::ConstPtr &msg)
 {
-  current_state = *msg;
+  if (msg)
+  {
+    current_state = *msg;
+  }
+}
+
+void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+  if (msg)
+  {
+    pose_in = msg->pose;
+    // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
+    // ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
+  }
+}
+
+void gps_callback(const sensor_msgs::NavSatFix::ConstPtr &msg)
+{
+  if (msg)
+  {
+    gps_msg = msg;
+  }
+}
+
+void alt_callback(const mavros_msgs::Altitude::ConstPtr &msg)
+{
+  if (msg)
+  {
+    alt_msg = msg;
+  }
 }
 
 bool no_position_yet()
@@ -703,7 +715,6 @@ int main(int argc, char **argv)
   gps_filename = timedir + time_str + ".csv";
   std::string log_filename = timedir + time_str + ".txt";
   /* Prepare GPS csv file and log txt file ends */
-
 
   /* Start Livox */
   if (!Init())
