@@ -863,6 +863,7 @@ int main(int argc, char **argv)
 
   std::cout << "Engaged offboard mode" << std::endl;
   string_to_file(log_filename, "Engaged offboard mode\n");
+return 0;
 
   // arm
   mavros_msgs::CommandBool arm_cmd;

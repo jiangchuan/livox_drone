@@ -18,7 +18,7 @@ while True:
     # check to see if button has been pushed
     if buttonState1 == False:
       print('Entered 1')
-      subprocess.call('/ bin/bash - c "source / opt/ros/kinetic/setup.bash; source / home/pi/catkin_ws/devel/setup.bash; / usr/bin/python / opt/ros/kinetic/bin/roslaunch livox_drone livox_drone.$
+      subprocess.call('/bin/bash -c "source /opt/ros/kinetic/setup.bash; source /home/pi/catkin_ws/devel/setup.bash; /usr/bin/python /opt/ros/kinetic/bin/roslaunch livox_drone livox_drone.launch"', shell=True)
       print('Entered 2')
 
     time.sleep(.1)
