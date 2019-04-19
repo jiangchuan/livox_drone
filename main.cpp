@@ -767,8 +767,10 @@ int main(int argc, char **argv)
   //the setpoint publishing rate MUST be faster than 2Hz
   ros::Rate rate((double)ROS_RATE);
 
+  int n_try_rate = 5 * ROS_RATE;
   // wait for FCU connection
-  while (ros::ok() && !current_state.connected)
+  // while (ros::ok() && !current_state.connected)
+  for (int i = 0; ros::ok() && !current_state.connected && i < n_try_rate; i++)
   {
     ros::spinOnce();
     rate.sleep();
@@ -780,7 +782,8 @@ int main(int argc, char **argv)
   string_to_file(log_filename, "Connected to flight control unit\n");
 
   // wait for local position feed
-  while (ros::ok() && no_position_yet())
+  // while (ros::ok() && no_position_yet())
+  for (int i = 0; ros::ok() && no_position_yet() && i < n_try_rate; i++)
   {
     ros::spinOnce();
     rate.sleep();
@@ -795,8 +798,8 @@ int main(int argc, char **argv)
 
   double sum_x = 0.0;
   double sum_y = 0.0;
-  int n_setpts = 100;
-  // int n_setpts = 40;
+  // int n_setpts = 100;
+  int n_setpts = 40;
   //send a few setpoints before starting
   for (int i = 0; ros::ok() && i < n_setpts; i++)
   {
@@ -837,7 +840,9 @@ int main(int argc, char **argv)
   mavros_msgs::SetMode offb_set_mode;
   offb_set_mode.request.custom_mode = "OFFBOARD";
   ros::Time last_request = ros::Time::now();
-  while (ros::ok() && current_state.mode != "OFFBOARD")
+  int n_try = 5;
+  int i_try = 0;
+  while (ros::ok() && current_state.mode != "OFFBOARD" && i_try < n_try)
   {
     if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
@@ -848,6 +853,7 @@ int main(int argc, char **argv)
         ROS_INFO("Offboard enabled");
       }
       last_request = ros::Time::now();
+      i_try++;
     }
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
@@ -861,7 +867,9 @@ int main(int argc, char **argv)
   // arm
   mavros_msgs::CommandBool arm_cmd;
   arm_cmd.request.value = true;
-  while (ros::ok() && !current_state.armed)
+  i_try = 0;
+
+  while (ros::ok() && !current_state.armed && i_try < n_try)
   {
     if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
@@ -871,6 +879,7 @@ int main(int argc, char **argv)
         ROS_INFO("Vehicle armed");
       }
       last_request = ros::Time::now();
+      i_try++;
     }
     local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
@@ -952,7 +961,6 @@ int main(int argc, char **argv)
   /* -1 ->  0 -> { 2 ->  3 ->  4 ->  1} -> { 2 ->  3 ->  4 ->  1} */
   ROS_INFO("Begin SZ scan >>>");
   int curr_loc = -1;
-
   int iseg = 0;
   while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
   {
