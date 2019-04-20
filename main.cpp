@@ -528,7 +528,7 @@ void OnDeviceBroadcast(const BroadcastDeviceInfo *info)
 
 void state_callback(const mavros_msgs::State::ConstPtr &msg)
 {
-    current_state = *msg;
+  current_state = *msg;
 }
 
 void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
@@ -699,9 +699,8 @@ void delta_orientation(double droll, double dpitch, double dyaw)
 // Follow Me: AUTO.FOLLOW_TARGET
 int main(int argc, char **argv)
 {
-  init_min_array();
-
   /* Prepare GPS csv file and log txt file starts */
+  init_min_array();
   // std::string rootdir = "/home/jiangchuan/livox_data/";
   std::string rootdir = "/home/pi/livox_data/";
   int status = mkdir(rootdir.c_str(), 0777);
@@ -764,9 +763,8 @@ int main(int argc, char **argv)
   //the setpoint publishing rate MUST be faster than 2Hz
   ros::Rate rate((double)ROS_RATE);
 
-  int n_try_rate = 5 * ROS_RATE;
+  int n_try_rate = 20 * ROS_RATE;
   // wait for FCU connection
-  // while (ros::ok() && !current_state.connected)
   for (int i = 0; ros::ok() && !current_state.connected && i < n_try_rate; i++)
   {
     ros::spinOnce();
@@ -774,24 +772,23 @@ int main(int argc, char **argv)
     // ROS_INFO("connecting to FCU ...");
     // string_to_file(log_filename, "connecting to FCU ...\n");
   }
-
   std::cout << "Connected to flight control unit" << std::endl;
   string_to_file(log_filename, "Connected to flight control unit\n");
 
-  // wait for local position feed
-  // while (ros::ok() && no_position_yet())
-  for (int i = 0; ros::ok() && no_position_yet() && i < n_try_rate; i++)
-  {
-    ros::spinOnce();
-    rate.sleep();
-    ROS_INFO("getting local position ...");
-    string_to_file(log_filename, "getting local position ...\n");
-  }
-
-  std::cout << "Got position feed" << std::endl;
-  string_to_file(log_filename, "Got position feed\n");
+  // // wait for local position feed
+  // for (int i = 0; ros::ok() && no_position_yet() && i < n_try_rate; i++)
+  // {
+  //   ros::spinOnce();
+  //   rate.sleep();
+  //   ROS_INFO("getting local position ...");
+  //   string_to_file(log_filename, "getting local position ...\n");
+  // }
+  // std::cout << "Got position feed" << std::endl;
+  // string_to_file(log_filename, "Got position feed\n");
 
   pose_stamped.pose = pose_in;
+  pose_stamped.pose.position.z = pose_in.position.z > 0 ? pose_in.position.z + 1.0 : 1.0;
+  std::cout << "Initial z = " << pose_in.position.z << std::endl;
 
   double sum_x = 0.0;
   double sum_y = 0.0;
@@ -800,38 +797,14 @@ int main(int argc, char **argv)
   //send a few setpoints before starting
   for (int i = 0; ros::ok() && i < n_setpts; i++)
   {
+    local_pos_pub.publish(pose_stamped);
     sum_x += pose_in.position.x;
     sum_y += pose_in.position.y;
-    local_pos_pub.publish(pose_stamped);
     ros::spinOnce();
     rate.sleep();
   }
-
-  std::cout << "Sent a few setpoints bofore starting" << std::endl;
-  string_to_file(log_filename, "Sent a few setpoints bofore starting\n");
-
-  double x0 = sum_x / n_setpts;
-  double y0 = sum_y / n_setpts;
-
-  std::cout << "One time loc: x = " << pose_stamped.pose.position.x << ", y = " << pose_stamped.pose.position.y << std::endl;
-  std::cout << "Avg time loc: x = " << x0 << ", y = " << y0 << std::endl;
-
-  if (fabs(x0 - pose_stamped.pose.position.x) > 2.0)
-  {
-    x0 = pose_stamped.pose.position.x;
-  }
-  else
-  {
-    pose_stamped.pose.position.x = x0;
-  }
-  if (fabs(y0 - pose_stamped.pose.position.y) > 2.0)
-  {
-    y0 = pose_stamped.pose.position.y;
-  }
-  else
-  {
-    pose_stamped.pose.position.y = y0;
-  }
+  // std::cout << "Sent a few setpoints bofore starting" << std::endl;
+  // string_to_file(log_filename, "Sent a few setpoints bofore starting\n");
 
   // change to offboard mode
   mavros_msgs::SetMode offb_set_mode;
@@ -866,7 +839,6 @@ return 0;
   mavros_msgs::CommandBool arm_cmd;
   arm_cmd.request.value = true;
   i_try = 0;
-
   while (ros::ok() && !current_state.armed && i_try < n_try)
   {
     if (ros::Time::now() - last_request > ros::Duration(5.0))
@@ -887,18 +859,29 @@ return 0;
   std::cout << "Armed" << std::endl;
   string_to_file(log_filename, "Armed\n");
 
-  // stay at 1 m for 1 second
-  int n_wait_sec = 1;
-  ROS_INFO("stayed at origin for %d seconds", n_wait_sec);
-  delta_position(0.0, 0.0, 1.0);
-  for (int i = 0; ros::ok() && i < n_wait_sec * ROS_RATE; i++)
-  {
-    local_pos_pub.publish(pose_stamped);
-    ros::spinOnce();
-    rate.sleep();
-  }
-  std::cout << "Stay at 1 m for 1 second" << std::endl;
-  string_to_file(log_filename, "Stay at 1 m for 1 second\n");
+  //////////////////////////////////
+  double x0 = sum_x / n_setpts;
+  double y0 = sum_y / n_setpts;
+  std::cout << "Avg time loc: x = " << x0 << ", y = " << y0 << std::endl;
+  std::cout << "Initial pose_stamped.pose.position.z = " << pose_stamped.pose.position.z << std::endl;
+  std::cout << "Initial pose_in.position.z = " << pose_in.position.z << std::endl;
+  pose_stamped.pose.position.x = x0;
+  pose_stamped.pose.position.y = y0;
+
+  /////////////////////////////
+
+  // // stay at 1 m for 1 second
+  // int n_wait_sec = 1;
+  // ROS_INFO("stayed at origin for %d seconds", n_wait_sec);
+  // delta_position(0.0, 0.0, 0.0);
+  // for (int i = 0; ros::ok() && i < n_wait_sec * ROS_RATE; i++)
+  // {
+  //   local_pos_pub.publish(pose_stamped);
+  //   ros::spinOnce();
+  //   rate.sleep();
+  // }
+  // std::cout << "Stay at 1 m for 1 second" << std::endl;
+  // string_to_file(log_filename, "Stay at 1 m for 1 second\n");
 
   // Initial rise 10 m
   ROS_INFO("Initial rise for %g meters", INITIAL_RISE);
