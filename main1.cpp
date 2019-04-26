@@ -39,7 +39,6 @@
 
 // #define SCAN_RADIUS 10.0
 #define SCAN_RADIUS 5.0
-#define PHI M_PI / 6.0
 
 // #define INITIAL_RISE 10.0
 #define INITIAL_RISE 2.0
@@ -581,13 +580,6 @@ bool no_position_yet()
   return fabs(pose_in.orientation.x) + fabs(pose_in.orientation.y) + fabs(pose_in.orientation.z) + fabs(pose_in.orientation.w) < 1e-6;
 }
 
-void set_position(double x, double y, double z)
-{
-  pose_stamped.pose.position.x = x;
-  pose_stamped.pose.position.y = y;
-  pose_stamped.pose.position.z = z;
-}
-
 void delta_position(double dx, double dy, double dz)
 {
   pose_stamped.pose.position.x += dx;
@@ -618,6 +610,87 @@ double get_travel_dz(double increment_z)
     return (double)(wire_dist - mid_dist);
   }
   return increment_z; // Too far
+}
+
+/*
+
+  1 ////////////////////// 2
+  //                      //
+  //                      //
+  //                      //
+  //                      //
+  0           -1          //
+  //                      //
+  //                      //
+  //                      //
+  //                      //
+  3 ////////////////////// 4
+  
+  */
+
+/*  O -> E1 -> {C2 -> C3 -> C4 -> C1} -> {C2 -> C3 -> C4 -> C1} */
+/* -1 ->  0 -> { 2 ->  3 ->  4 ->  1} -> { 2 ->  3 ->  4 ->  1} */
+/* -1 ->  0: diameter / 2.0, diameter_time * sqrt(2.0) */
+/*  0 ->  2: diameter * sqrt(1.25), diameter_time / pow(1.25, 0.25) */
+/*  2 ->  3,  4 ->  1: diameter * sqrt(2), diameter_time / pow(2.0, 0.25) */
+/*  3 ->  4,  1 ->  2: diameter, diameter_time */
+/*  1 -> -1,  2 -> -1,  3 -> -1,  4 -> -1: diameter / sqrt(2.0), diameter_time * pow(2.0, 0.25) */
+
+int get_travel_params(int curr_loc)
+{
+  double scaler = 1.0;
+  switch (curr_loc)
+  {
+  case -1:
+    curr_loc = 0;
+    scaler = sqrt(2.0);
+    destx = e1x;
+    desty = e1y;
+    break;
+
+  case 0:
+    curr_loc = 2;
+    scaler = 1.0 / pow(1.25, 0.25);
+    destx = c2x;
+    desty = c2y;
+    break;
+
+  case 1:
+    curr_loc = 2;
+    scaler = 1.0;
+    destx = c2x;
+    desty = c2y;
+    break;
+
+  case 2:
+    curr_loc = 3;
+    scaler = 1.0 / pow(2.0, 0.25);
+    destx = c3x;
+    desty = c3y;
+    break;
+
+  case 3:
+    curr_loc = 4;
+    scaler = 1.0;
+    destx = c4x;
+    desty = c4y;
+    break;
+
+  case 4:
+    curr_loc = 1;
+    scaler = 1.0 / pow(2.0, 0.25);
+    destx = c1x;
+    desty = c1y;
+    break;
+  }
+  double increment_z = 0.0;
+  increment_z = DELTA_METERS_V * scaler;
+  travel_time = diameter_time * scaler;
+  printArr();
+  dz = get_travel_dz(increment_z);
+  std::cout << "Delta Z = " << dz << std::endl;
+
+  return curr_loc;
 }
 
 double compute_dist_latlon(double lat1, double long1, double lat2, double long2)
@@ -656,16 +729,6 @@ void delta_orientation(double droll, double dpitch, double dyaw)
   pose_stamped.pose.orientation.x = qtn.getX();
   pose_stamped.pose.orientation.y = qtn.getY();
   pose_stamped.pose.orientation.z = qtn.getZ();
-}
-
-double rotate_x(double x, double y, double sinyaw, double cosyaw)
-{
-  return x * cosyaw - y * sinyaw;
-}
-
-double rotate_y(double x, double y, double sinyaw, double cosyaw)
-{
-  return x * sinyaw + y * cosyaw;
 }
 
 // Manual: MANUAL
@@ -918,181 +981,89 @@ int main(int argc, char **argv)
   // getRPY(pose_in.orientation);            // Get yaw
   ROS_INFO("  >>> INITIAL yaw = %1.1f degrees", to_degrees(yaw));
 
-  //////////////////////////////////////
-  double sinphi = sin(PHI);
-  double cosphi = cos(PHI);
-  double xc = SCAN_RADIUS / sin(PHI);
-  double yc = 0.0;
-  double y1 = SCAN_RADIUS * cosphi;
-  double x1 = y1 * cosphi / sinphi;
-  double x2 = x1;
-  double y2 = -y1;
-  double x3 = -x1;
-  double y3 = y1;
-  double x4 = -x1;
-  double y4 = -y1;
+  double radius_sin = SCAN_RADIUS * sin(yaw);
+  double radius_cos = SCAN_RADIUS * cos(yaw);
+  e1x = x0 - radius_sin;
+  e1y = y0 + radius_cos;
+  e2x = x0 + radius_sin;
+  e2y = y0 - radius_cos;
 
-  double phirange = M_PI + 2 * PHI;
-  double cdist = phirange * SCAN_RADIUS;
+  c1x = e1x + radius_cos;
+  c1y = e1y + radius_sin;
+  c3x = e1x - radius_cos;
+  c3y = e1y - radius_sin;
 
-  double sinyaw = sin(yaw);
-  double cosyaw = cos(yaw);
+  c2x = e2x + radius_cos;
+  c2y = e2y + radius_sin;
+  c4x = e2x - radius_cos;
+  c4y = e2y - radius_sin;
 
-  int ctravel_time = (int)(round(cdist / DRONE_SPEED_H));
-  int cnum_updates = ctravel_time * ROS_RATE / UPDATE_JUMP;
-  double cx_arr12[cnum_updates];
-  double cy_arr12[cnum_updates];
-  double cx_arr34[cnum_updates];
-  double cy_arr34[cnum_updates];
+  diameter_time = (int)(M_PI * SCAN_RADIUS / DRONE_SPEED_H);
 
-  double theta12 = M_PI / 2.0 + PHI;
-  double theta34 = M_PI / 2.0 - PHI;
-  double dtheta = (M_PI + 2 * PHI) / (double)cnum_updates;
-  for (int i = 0; i < cnum_updates; i++)
-  {
-    double itheta = theta12 - (i + 1) * dtheta;
-    cx_arr12[i] = xc + SCAN_RADIUS * cos(itheta);
-    cy_arr12[i] = yc + SCAN_RADIUS * sin(itheta);
-
-    itheta = theta34 + (i + 1) * dtheta;
-    cx_arr34[i] = -xc + SCAN_RADIUS * cos(itheta);
-    cy_arr34[i] = -yc + SCAN_RADIUS * sin(itheta);
-  }
-
-  //////////////////////////////////////
-  ROS_INFO("Begin 8 style scan >>>");
-  int curr_loc = 0;
+  ROS_INFO("Begin SZ scan >>>");
+  int curr_loc = -1;
   int iseg = 0;
   while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
   {
+    iseg++;
     std::cout << curr_loc << " -> ";
-    switch (curr_loc)
-    {
-    case 0:
-      destx = x1;
-      desty = y1;
-      curr_loc = 1;
-      break;
+    curr_loc = get_travel_params(curr_loc);
+    std::cout << curr_loc << std::endl;
 
-    case 1:
-      curr_loc = 2;
-      break;
-
-    case 2:
-      destx = x3;
-      desty = y3;
-      curr_loc = 3;
-      break;
-
-    case 3:
-      curr_loc = 4;
-      break;
-
-    case 4:
-      destx = x1;
-      desty = y1;
-      curr_loc = 1;
-      break;
-    }
-    double increment_z = 0.0;
-    // increment_z = DELTA_METERS_V * scaler;
-    increment_z = DELTA_METERS_V;
-    printArr();
-    dz = get_travel_dz(increment_z);
-    std::cout << "Delta Z = " << dz << std::endl;
     init_min_array();
 
-    if (curr_loc == 1 || curr_loc == 3)
-    { // Straight line travel
-      double dx = (destx - pose_in.position.x);
-      double dy = (desty - pose_in.position.y);
-      double dist = sqrt(dx * dx + dy * dy);
-      travel_time = (int)(round(dist / DRONE_SPEED_H));
-      int num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
-      double idx = dx / (double)num_updates;
-      double idy = dy / (double)num_updates;
-      double idz = dz / (double)num_updates;
-      for (int i = 0; i < num_updates; i++)
-      {
-        // delta_position(idx, idy, idz);
-        delta_position(idx, idy, 0.0);
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
-      }
-    }
-    else if (curr_loc == 2)
+    double dxr = (destx - pose_in.position.x) / 2.0;
+    double dyr = (desty - pose_in.position.y) / 2.0;
+    int num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
+    double dtheta = M_PI / (double)num_updates;
+    double idz = dz / (double)num_updates;
+    for (int i = 0; i < num_updates; i++)
     {
-      // Half circle travel 1 --> 2
-      double idz = dz / (double)cnum_updates;
-      for (int i = 0; i < cnum_updates; i++)
+      double cos_coef = cos(dtheta * i) - cos(dtheta * (i + 1));
+      double idx = dxr * cos_coef;
+      double idy = dyr * cos_coef;
+      delta_position(idx, idy, idz);
+      for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
       {
-        pose_stamped.pose.position.x = cx_arr12[i];
-        pose_stamped.pose.position.y = cy_arr12[i];
-        pose_stamped.pose.position.z += idz;
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
+        local_pos_pub.publish(pose_stamped);
+        ros::spinOnce();
+        rate.sleep();
       }
     }
-    else if (curr_loc == 4)
-    {
-      // Half circle travel 3 --> 4
-      double idz = dz / (double)cnum_updates;
-      for (int i = 0; i < cnum_updates; i++)
-      {
-        pose_stamped.pose.position.x = cx_arr34[i];
-        pose_stamped.pose.position.y = cy_arr34[i];
-        pose_stamped.pose.position.z += idz;
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
-      }
-    }
-    iseg++;
   }
   string_to_file(log_filename, "Completed periodic flight\n");
 
-  // // Return to initial point
-  // ROS_INFO("Return to initial point");
-  // double increment_z = 0.0;
-  // double scaler = pow(2.0, 0.25);
-  // increment_z = DELTA_METERS_V * scaler;
-  // travel_time = diameter_time * scaler;
-  // printArr();
-  // dz = get_travel_dz(increment_z);
-  // std::cout << "Delta Z = " << dz << std::endl;
-  // destx = x0;
-  // desty = y0;
-  // init_min_array();
-  // double dxr = (destx - pose_in.position.x) / 2.0;
-  // double dyr = (desty - pose_in.position.y) / 2.0;
-  // num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
-  // double dtheta = M_PI / (double)num_updates;
-  // idz = dz / (double)num_updates;
-  // for (int i = 0; i < num_updates; i++)
-  // {
-  //   double cos_coef = cos(dtheta * i) - cos(dtheta * (i + 1));
-  //   double idx = dxr * cos_coef;
-  //   double idy = dyr * cos_coef;
-  //   delta_position(idx, idy, idz);
-  //   for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-  //   {
-  //     local_pos_pub.publish(pose_stamped);
-  //     ros::spinOnce();
-  //     rate.sleep();
-  //   }
-  // }
-  // string_to_file(log_filename, "Returned to initial point\n");
+  // Return to initial point
+  ROS_INFO("Return to initial point");
+  double increment_z = 0.0;
+  double scaler = pow(2.0, 0.25);
+  increment_z = DELTA_METERS_V * scaler;
+  travel_time = diameter_time * scaler;
+  printArr();
+  dz = get_travel_dz(increment_z);
+  std::cout << "Delta Z = " << dz << std::endl;
+  destx = x0;
+  desty = y0;
+  init_min_array();
+  double dxr = (destx - pose_in.position.x) / 2.0;
+  double dyr = (desty - pose_in.position.y) / 2.0;
+  num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
+  double dtheta = M_PI / (double)num_updates;
+  idz = dz / (double)num_updates;
+  for (int i = 0; i < num_updates; i++)
+  {
+    double cos_coef = cos(dtheta * i) - cos(dtheta * (i + 1));
+    double idx = dxr * cos_coef;
+    double idy = dyr * cos_coef;
+    delta_position(idx, idy, idz);
+    for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
+    {
+      local_pos_pub.publish(pose_stamped);
+      ros::spinOnce();
+      rate.sleep();
+    }
+  }
+  string_to_file(log_filename, "Returned to initial point\n");
 
   // Final drop 1 m to make sure it returns to x0, y0
   ROS_INFO("Final drop 1 m to make sure it returns to x0, y0");
