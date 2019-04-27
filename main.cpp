@@ -34,11 +34,11 @@
 #define MAX_SCAN_SEG 10
 #define MAX_MID_SCAN_SEG 8
 
-#define DRONE_SPEED_H 1.5
+#define DRONE_SPEED_H 1.0
 #define DRONE_SPEED_V 1.0
 
-// #define SCAN_RADIUS 10.0
-#define SCAN_RADIUS 5.0
+#define SCAN_RADIUS 10.0
+// #define SCAN_RADIUS 5.0
 #define PHI M_PI / 6.0
 
 // #define INITIAL_RISE 10.0
@@ -868,19 +868,6 @@ int main(int argc, char **argv)
 
   /////////////////////////////
 
-  // // stay at 1 m for 1 second
-  // int n_wait_sec = 1;
-  // ROS_INFO("stayed at origin for %d seconds", n_wait_sec);
-  // delta_position(0.0, 0.0, 0.0);
-  // for (int i = 0; ros::ok() && i < n_wait_sec * ROS_RATE; i++)
-  // {
-  //   local_pos_pub.publish(pose_stamped);
-  //   ros::spinOnce();
-  //   rate.sleep();
-  // }
-  // std::cout << "Stay at 1 m for 1 second" << std::endl;
-  // string_to_file(log_filename, "Stay at 1 m for 1 second\n");
-
   // Initial rise 10 m
   ROS_INFO("Initial rise for %g meters", INITIAL_RISE);
   int rise_time = (int)(INITIAL_RISE / DRONE_SPEED_V);
@@ -919,24 +906,32 @@ int main(int argc, char **argv)
   ROS_INFO("  >>> INITIAL yaw = %1.1f degrees", to_degrees(yaw));
 
   //////////////////////////////////////
+  double sinyaw = sin(yaw);
+  double cosyaw = cos(yaw);
   double sinphi = sin(PHI);
   double cosphi = cos(PHI);
-  double xc = SCAN_RADIUS / sin(PHI);
-  double yc = 0.0;
+
+  double xc1 = SCAN_RADIUS / sin(PHI);
+  double yc1 = 0.0;
+  double xc2 = -xc1;
+  double yc2 = -yc1;
+  // double xc1r = rotate_x(xc1, yc1, sinyaw, cosyaw);
+  // double yc1r = rotate_y(xc1, yc1, sinyaw, cosyaw);
+  // double xc2r = -xc1r;
+  // double yc2r = -yc1r;
+
   double y1 = SCAN_RADIUS * cosphi;
   double x1 = y1 * cosphi / sinphi;
-  double x2 = x1;
-  double y2 = -y1;
   double x3 = -x1;
   double y3 = y1;
-  double x4 = -x1;
-  double y4 = -y1;
+
+  double x1r = rotate_x(x1, y1, sinyaw, cosyaw);
+  double y1r = rotate_y(x1, y1, sinyaw, cosyaw);
+  double x3r = rotate_x(x3, y3, sinyaw, cosyaw);
+  double y3r = rotate_y(x3, y3, sinyaw, cosyaw);
 
   double phirange = M_PI + 2 * PHI;
   double cdist = phirange * SCAN_RADIUS;
-
-  double sinyaw = sin(yaw);
-  double cosyaw = cos(yaw);
 
   int ctravel_time = (int)(round(cdist / DRONE_SPEED_H));
   int cnum_updates = ctravel_time * ROS_RATE / UPDATE_JUMP;
@@ -951,12 +946,16 @@ int main(int argc, char **argv)
   for (int i = 0; i < cnum_updates; i++)
   {
     double itheta = theta12 - (i + 1) * dtheta;
-    cx_arr12[i] = xc + SCAN_RADIUS * cos(itheta);
-    cy_arr12[i] = yc + SCAN_RADIUS * sin(itheta);
+    double cx = xc1 + SCAN_RADIUS * cos(itheta);
+    double cy = yc1 + SCAN_RADIUS * sin(itheta);
+    cx_arr12[i] = rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr12[i] = rotate_y(cx, cy, sinyaw, cosyaw);
 
     itheta = theta34 + (i + 1) * dtheta;
-    cx_arr34[i] = -xc + SCAN_RADIUS * cos(itheta);
-    cy_arr34[i] = -yc + SCAN_RADIUS * sin(itheta);
+    cx = xc2 + SCAN_RADIUS * cos(itheta);
+    cy = yc2 + SCAN_RADIUS * sin(itheta);
+    cx_arr34[i] = rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr34[i] = rotate_y(cx, cy, sinyaw, cosyaw);
   }
 
   //////////////////////////////////////
@@ -969,8 +968,8 @@ int main(int argc, char **argv)
     switch (curr_loc)
     {
     case 0:
-      destx = x1;
-      desty = y1;
+      destx = x1r;
+      desty = y1r;
       curr_loc = 1;
       break;
 
@@ -979,8 +978,8 @@ int main(int argc, char **argv)
       break;
 
     case 2:
-      destx = x3;
-      desty = y3;
+      destx = x3r;
+      desty = y3r;
       curr_loc = 3;
       break;
 
@@ -989,8 +988,8 @@ int main(int argc, char **argv)
       break;
 
     case 4:
-      destx = x1;
-      desty = y1;
+      destx = x1r;
+      desty = y1r;
       curr_loc = 1;
       break;
     }
@@ -1014,8 +1013,7 @@ int main(int argc, char **argv)
       double idz = dz / (double)num_updates;
       for (int i = 0; i < num_updates; i++)
       {
-        // delta_position(idx, idy, idz);
-        delta_position(idx, idy, 0.0);
+        delta_position(idx, idy, idz);
         for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
         {
           local_pos_pub.publish(pose_stamped);
