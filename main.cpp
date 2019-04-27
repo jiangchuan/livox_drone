@@ -29,20 +29,22 @@
 
 #define ROS_RATE 20
 #define MIN_ARR_LEN 5
-#define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
-// #define MAX_SCAN_SEG 20
-#define MAX_SCAN_SEG 10
+// #define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
+#define UPDATE_JUMP 1 // ROS_RATE / UPDATE_JUMP is the pos update rate
+#define MAX_SCAN_SEG 8
 #define MAX_MID_SCAN_SEG 8
 
-#define DRONE_SPEED_H 1.0
+#define DRONE_SPEED_H 1.5
 #define DRONE_SPEED_V 1.0
 
-#define SCAN_RADIUS 10.0
-// #define SCAN_RADIUS 5.0
-#define PHI M_PI / 6.0
+// #define SCAN_RADIUS 10.0
+// #define TURN_RADIUS 4.0
+#define SCAN_RADIUS 5.0
+#define TURN_RADIUS 2.0
+#define PHI M_PI / 4.0
 
 // #define INITIAL_RISE 10.0
-#define INITIAL_RISE 2.0
+#define INITIAL_RISE 3.0
 #define DELTA_METERS_V 1.0 // maximum dz
 
 // #define NEAR_DIST 12.0
@@ -63,16 +65,6 @@ mavros_msgs::Altitude::ConstPtr alt_msg;
 double roll = 0.0, pitch = 0.0, yaw = 0.0;
 double worldx = 0.0, worldy = 0.0, worldz = 0.0;
 int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
-
-double e1x, e1y, e2x, e2y;
-double c1x, c1y, c3x, c3y;
-double c2x, c2y, c4x, c4y;
-int diameter_time;
-
-double destx = 0.0;
-double desty = 0.0;
-double dz = 0.0;
-int travel_time = 0;
 
 float FAR_DIST = (float)(NEAR_DIST + 2.0 * DELTA_METERS_V);
 float mid_dist = (NEAR_DIST + FAR_DIST) / 2.0f;
@@ -588,13 +580,6 @@ void set_position(double x, double y, double z)
   pose_stamped.pose.position.z = z;
 }
 
-void delta_position(double dx, double dy, double dz)
-{
-  pose_stamped.pose.position.x += dx;
-  pose_stamped.pose.position.y += dy;
-  pose_stamped.pose.position.z += dz;
-}
-
 void printArr()
 {
   printf("min_array = ");
@@ -668,6 +653,13 @@ double rotate_y(double x, double y, double sinyaw, double cosyaw)
   return x * sinyaw + y * cosyaw;
 }
 
+double dist(double x1, double y1, double x2, double y2)
+{
+  double deltax = x1 - x2;
+  double deltay = y1 - y2;
+  return sqrt(deltax * deltax + deltay * deltay);
+}
+
 // Manual: MANUAL
 // Return: AUTO.RTL
 // AUTO_MISSION
@@ -679,8 +671,8 @@ int main(int argc, char **argv)
 {
   /* Prepare GPS csv file and log txt file starts */
   init_min_array();
-  std::string rootdir = "/home/jiangchuan/livox_data/";
-  // std::string rootdir = "/home/pi/livox_data/";
+  // std::string rootdir = "/home/jiangchuan/livox_data/";
+  std::string rootdir = "/home/pi/livox_data/";
   int status = mkdir(rootdir.c_str(), 0777);
   get_time();
   std::string time_str = get_time_str();
@@ -764,7 +756,7 @@ int main(int argc, char **argv)
   // std::cout << "Got position feed" << std::endl;
   // string_to_file(log_filename, "Got position feed\n");
 
-  pose_stamped.pose = pose_in;
+  set_position(pose_in.position.x, pose_in.position.y, pose_in.position.z);
   pose_stamped.pose.position.z = pose_stamped.pose.position.z > 0 ? pose_stamped.pose.position.z + 2.0 : 2.0;
   std::cout << "Initial z = " << pose_stamped.pose.position.z << std::endl;
 
@@ -867,16 +859,15 @@ int main(int argc, char **argv)
   pose_stamped.pose.orientation.w = qtn_w0;
 
   /////////////////////////////
-
   // Initial rise 10 m
   ROS_INFO("Initial rise for %g meters", INITIAL_RISE);
-  int rise_time = (int)(INITIAL_RISE / DRONE_SPEED_V);
-  int num_updates = rise_time * ROS_RATE / UPDATE_JUMP;
+  double rise_time = INITIAL_RISE / DRONE_SPEED_V;
+  int num_updates = (int)(round(rise_time * ROS_RATE / UPDATE_JUMP));
   double idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
+  double startz = pose_stamped.pose.position.z;
   for (int i = 0; i < num_updates; i++)
   {
-    // std::cout << "Initial rise: " << i << std::endl;
-    delta_position(0.0, 0.0, idz);
+    set_position(x0, y0, startz + (i + 1) * idz);
     for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
     {
       local_pos_pub.publish(pose_stamped);
@@ -894,12 +885,6 @@ int main(int argc, char **argv)
   std::cout << "Completed initial rise" << std::endl;
   string_to_file(log_filename, "Completed initial rise\n");
 
-  mavros_msgs::CommandTOL land_cmd;
-  land_cmd.request.yaw = 0.0f;
-  land_cmd.request.latitude = 0.0f;
-  land_cmd.request.longitude = 0.0f;
-  land_cmd.request.altitude = 0.0f;
-
   // Mission starts here
   getRPY(qtn_x0, qtn_y0, qtn_z0, qtn_w0); // Get yaw
   // getRPY(pose_in.orientation);            // Get yaw
@@ -910,198 +895,339 @@ int main(int argc, char **argv)
   double cosyaw = cos(yaw);
   double sinphi = sin(PHI);
   double cosphi = cos(PHI);
+  double piphi = M_PI / 4.0 - PHI / 2.0;
+  double sinpiphi = sin(piphi);
+  double cospiphi = cos(piphi);
 
-  double xc1 = SCAN_RADIUS / sin(PHI);
-  double yc1 = 0.0;
-  double xc2 = -xc1;
+  double h = SCAN_RADIUS + TURN_RADIUS * (cospiphi / sinpiphi - 1);
+  std::cout << "h = " << h << std::endl;
+
+  double xc1 = h * cosphi / sinphi - TURN_RADIUS;
+  double yc1 = h - TURN_RADIUS * cosphi / sinpiphi;
+  double xc2 = xc1;
   double yc2 = -yc1;
-  // double xc1r = rotate_x(xc1, yc1, sinyaw, cosyaw);
-  // double yc1r = rotate_y(xc1, yc1, sinyaw, cosyaw);
-  // double xc2r = -xc1r;
-  // double yc2r = -yc1r;
+  double xc3 = -xc1;
+  double yc3 = yc1;
+  double xc4 = -xc1;
+  double yc4 = -yc1;
 
-  double y1 = SCAN_RADIUS * cosphi;
-  double x1 = y1 * cosphi / sinphi;
-  double x3 = -x1;
-  double y3 = y1;
+  double rho = h / sinphi - TURN_RADIUS * cospiphi / sinpiphi;
+  double x1 = rho * cosphi;
+  double y1 = rho * sinphi;
+  double x2 = h * cosphi / sinphi;
+  double y2 = yc1;
+  double x3 = x2;
+  double y3 = -y2;
+  double x4 = x1;
+  double y4 = -y1;
+  double x5 = -x1;
+  double y5 = y1;
+  double x6 = -x2;
+  double y6 = y2;
+  double x7 = -x2;
+  double y7 = -y2;
+  double x8 = -x1;
+  double y8 = -y1;
+  double x1r = x0 + rotate_x(x1, y1, sinyaw, cosyaw);
+  double y1r = y0 + rotate_y(x1, y1, sinyaw, cosyaw);
+  double x2r = x0 + rotate_x(x2, y2, sinyaw, cosyaw);
+  double y2r = y0 + rotate_y(x2, y2, sinyaw, cosyaw);
+  double x3r = x0 + rotate_x(x3, y3, sinyaw, cosyaw);
+  double y3r = y0 + rotate_y(x3, y3, sinyaw, cosyaw);
+  double x4r = x0 + rotate_x(x4, y4, sinyaw, cosyaw);
+  double y4r = y0 + rotate_y(x4, y4, sinyaw, cosyaw);
+  double x5r = x0 + rotate_x(x5, y5, sinyaw, cosyaw);
+  double y5r = y0 + rotate_y(x5, y5, sinyaw, cosyaw);
+  double x6r = x0 + rotate_x(x6, y6, sinyaw, cosyaw);
+  double y6r = y0 + rotate_y(x6, y6, sinyaw, cosyaw);
+  double x7r = x0 + rotate_x(x7, y7, sinyaw, cosyaw);
+  double y7r = y0 + rotate_y(x7, y7, sinyaw, cosyaw);
+  double x8r = x0 + rotate_x(x8, y8, sinyaw, cosyaw);
+  double y8r = y0 + rotate_y(x8, y8, sinyaw, cosyaw);
 
-  double x1r = rotate_x(x1, y1, sinyaw, cosyaw);
-  double y1r = rotate_y(x1, y1, sinyaw, cosyaw);
-  double x3r = rotate_x(x3, y3, sinyaw, cosyaw);
-  double y3r = rotate_y(x3, y3, sinyaw, cosyaw);
+  // std::cout << "x1 = " << x1 << ", y1 = " << y1 << std::endl;
+  // std::cout << "x2 = " << x2 << ", y2 = " << y2 << std::endl;
+  // std::cout << "x3 = " << x3 << ", y3 = " << y3 << std::endl;
+  // std::cout << "x4 = " << x4 << ", y4 = " << y4 << std::endl;
+  // std::cout << "x5 = " << x5 << ", y5 = " << y5 << std::endl;
+  // std::cout << "x6 = " << x6 << ", y6 = " << y6 << std::endl;
+  // std::cout << "x7 = " << x7 << ", y7 = " << y7 << std::endl;
+  // std::cout << "x8 = " << x8 << ", y8 = " << y8 << std::endl;
 
-  double phirange = M_PI + 2 * PHI;
-  double cdist = phirange * SCAN_RADIUS;
+  // Lines
+  double xstart = x0;
+  double ystart = y0;
+  double xend = x1r;
+  double yend = y1r;
+  double travel_time = dist(xstart, ystart, xend, yend) / DRONE_SPEED_H;
+  int num_updates0 = (int)(round(travel_time * ROS_RATE / UPDATE_JUMP));
+  double idx = (xend - xstart) / (double)num_updates0;
+  double idy = (yend - ystart) / (double)num_updates0;
+  double x_arr0[num_updates0];
+  double y_arr0[num_updates0];
+  for (int i = 0; i < num_updates0; i++)
+  {
+    x_arr0[i] = xstart + (i + 1) * idx;
+    y_arr0[i] = ystart + (i + 1) * idy;
+  }
 
-  int ctravel_time = (int)(round(cdist / DRONE_SPEED_H));
-  int cnum_updates = ctravel_time * ROS_RATE / UPDATE_JUMP;
-  double cx_arr12[cnum_updates];
-  double cy_arr12[cnum_updates];
-  double cx_arr34[cnum_updates];
-  double cy_arr34[cnum_updates];
+  xstart = x8r, ystart = y8r, xend = x1r, yend = y1r;
+  travel_time = dist(xstart, ystart, xend, yend) / DRONE_SPEED_H;
+  int num_updates1 = (int)(round(travel_time * ROS_RATE / UPDATE_JUMP));
+  idx = (xend - xstart) / (double)num_updates1;
+  idy = (yend - ystart) / (double)num_updates1;
+  double x_arr1[num_updates1];
+  double y_arr1[num_updates1];
+  for (int i = 0; i < num_updates1; i++)
+  {
+    x_arr1[i] = xstart + (i + 1) * idx;
+    y_arr1[i] = ystart + (i + 1) * idy;
+  }
 
-  double theta12 = M_PI / 2.0 + PHI;
-  double theta34 = M_PI / 2.0 - PHI;
-  double dtheta = (M_PI + 2 * PHI) / (double)cnum_updates;
+  xstart = x2r, ystart = y2r, xend = x3r, yend = y3r;
+  travel_time = dist(xstart, ystart, xend, yend) / DRONE_SPEED_H;
+  int num_updates2 = (int)(round(travel_time * ROS_RATE / UPDATE_JUMP));
+  idx = (xend - xstart) / (double)num_updates2;
+  idy = (yend - ystart) / (double)num_updates2;
+  double x_arr2[num_updates2];
+  double y_arr2[num_updates2];
+  for (int i = 0; i < num_updates2; i++)
+  {
+    x_arr2[i] = xstart + (i + 1) * idx;
+    y_arr2[i] = ystart + (i + 1) * idy;
+  }
+
+  xstart = x4r, ystart = y4r, xend = x5r, yend = y5r;
+  travel_time = dist(xstart, ystart, xend, yend) / DRONE_SPEED_H;
+  int num_updates3 = (int)(round(travel_time * ROS_RATE / UPDATE_JUMP));
+  idx = (xend - xstart) / (double)num_updates3;
+  idy = (yend - ystart) / (double)num_updates3;
+  double x_arr3[num_updates3];
+  double y_arr3[num_updates3];
+  for (int i = 0; i < num_updates3; i++)
+  {
+    x_arr3[i] = xstart + (i + 1) * idx;
+    y_arr3[i] = ystart + (i + 1) * idy;
+  }
+
+  xstart = x6r, ystart = y6r, xend = x7r, yend = y7r;
+  travel_time = dist(xstart, ystart, xend, yend) / DRONE_SPEED_H;
+  int num_updates4 = (int)(round(travel_time * ROS_RATE / UPDATE_JUMP));
+  idx = (xend - xstart) / (double)num_updates4;
+  idy = (yend - ystart) / (double)num_updates4;
+  double x_arr4[num_updates4];
+  double y_arr4[num_updates4];
+  for (int i = 0; i < num_updates4; i++)
+  {
+    x_arr4[i] = xstart + (i + 1) * idx;
+    y_arr4[i] = ystart + (i + 1) * idy;
+  }
+
+  // Circles
+  double phirange = M_PI / 2.0 + PHI;
+  double cdist = phirange * TURN_RADIUS;
+
+  double ctravel_time = cdist / DRONE_SPEED_H;
+  int cnum_updates = (int)(round(ctravel_time * ROS_RATE / UPDATE_JUMP));
+  double cx_arr1[cnum_updates];
+  double cy_arr1[cnum_updates];
+  double cx_arr2[cnum_updates];
+  double cy_arr2[cnum_updates];
+  double cx_arr3[cnum_updates];
+  double cy_arr3[cnum_updates];
+  double cx_arr4[cnum_updates];
+  double cy_arr4[cnum_updates];
+
+  double theta1 = M_PI / 2.0 + PHI;
+  double theta2 = 0.0;
+  double theta3 = M_PI / 2.0 - PHI;
+  double theta4 = M_PI;
+  double dtheta = phirange / (double)cnum_updates;
   for (int i = 0; i < cnum_updates; i++)
   {
-    double itheta = theta12 - (i + 1) * dtheta;
-    double cx = xc1 + SCAN_RADIUS * cos(itheta);
-    double cy = yc1 + SCAN_RADIUS * sin(itheta);
-    cx_arr12[i] = rotate_x(cx, cy, sinyaw, cosyaw);
-    cy_arr12[i] = rotate_y(cx, cy, sinyaw, cosyaw);
+    double itheta = theta1 - (i + 1) * dtheta;
+    double cx = xc1 + TURN_RADIUS * cos(itheta);
+    double cy = yc1 + TURN_RADIUS * sin(itheta);
+    cx_arr1[i] = x0 + rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr1[i] = y0 + rotate_y(cx, cy, sinyaw, cosyaw);
 
-    itheta = theta34 + (i + 1) * dtheta;
-    cx = xc2 + SCAN_RADIUS * cos(itheta);
-    cy = yc2 + SCAN_RADIUS * sin(itheta);
-    cx_arr34[i] = rotate_x(cx, cy, sinyaw, cosyaw);
-    cy_arr34[i] = rotate_y(cx, cy, sinyaw, cosyaw);
+    itheta = theta2 - (i + 1) * dtheta;
+    cx = xc2 + TURN_RADIUS * cos(itheta);
+    cy = yc2 + TURN_RADIUS * sin(itheta);
+    cx_arr2[i] = x0 + rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr2[i] = y0 + rotate_y(cx, cy, sinyaw, cosyaw);
+
+    itheta = theta3 + (i + 1) * dtheta;
+    cx = xc3 + TURN_RADIUS * cos(itheta);
+    cy = yc3 + TURN_RADIUS * sin(itheta);
+    cx_arr3[i] = x0 + rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr3[i] = y0 + rotate_y(cx, cy, sinyaw, cosyaw);
+
+    itheta = theta4 + (i + 1) * dtheta;
+    cx = xc4 + TURN_RADIUS * cos(itheta);
+    cy = yc4 + TURN_RADIUS * sin(itheta);
+    cx_arr4[i] = x0 + rotate_x(cx, cy, sinyaw, cosyaw);
+    cy_arr4[i] = y0 + rotate_y(cx, cy, sinyaw, cosyaw);
   }
 
   //////////////////////////////////////
   ROS_INFO("Begin 8 style scan >>>");
   int curr_loc = 0;
   int iseg = 0;
-  while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
+  bool completed = false;
+  // while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
+  while (true)
   {
-    std::cout << curr_loc << " -> ";
+    std::cout << "iseg = " << iseg << ", curr_loc = " << curr_loc << " -> ";
+    double *cx_arr;
+    double *cy_arr;
+    double dz = 0;
+    int curr_num_update = 0;
+
     switch (curr_loc)
     {
     case 0:
-      destx = x1r;
-      desty = y1r;
+      curr_num_update = num_updates0;
+      dz = get_travel_dz(DELTA_METERS_V / 2.0);
+      cx_arr = x_arr0;
+      cy_arr = y_arr0;
+      printArr();
+      std::cout << "Delta Z = " << dz << std::endl;
       curr_loc = 1;
       break;
-
     case 1:
+      curr_num_update = cnum_updates;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = cx_arr1;
+      cy_arr = cy_arr1;
+
+      printArr();
+      init_min_array();
+      std::cout << "Delta Z = " << dz << std::endl;
+
       curr_loc = 2;
       break;
-
     case 2:
-      destx = x3r;
-      desty = y3r;
+      curr_num_update = num_updates2;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = x_arr2;
+      cy_arr = y_arr2;
+
+      printArr();
+      std::cout << "Delta Z = " << dz << std::endl;
+
       curr_loc = 3;
       break;
-
     case 3:
+      curr_num_update = cnum_updates;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = cx_arr2;
+      cy_arr = cy_arr2;
+
+      printArr();
+      std::cout << "Delta Z = " << dz << std::endl;
+
       curr_loc = 4;
       break;
-
     case 4:
-      destx = x1r;
-      desty = y1r;
+      curr_num_update = num_updates3;
+      dz = get_travel_dz(DELTA_METERS_V);
+      cx_arr = x_arr3;
+      cy_arr = y_arr3;
+
+      printArr();
+      init_min_array();
+      std::cout << "Delta Z = " << dz << std::endl;
+
+      curr_loc = 5;
+      break;
+    case 5:
+      curr_num_update = cnum_updates;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = cx_arr3;
+      cy_arr = cy_arr3;
+
+      printArr();
+      init_min_array();
+      std::cout << "Delta Z = " << dz << std::endl;
+
+      curr_loc = 6;
+      break;
+    case 6:
+      curr_num_update = num_updates4;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = x_arr4;
+      cy_arr = y_arr4;
+
+      printArr();
+      std::cout << "Delta Z = " << dz << std::endl;
+
+      curr_loc = 7;
+      break;
+    case 7:
+      curr_num_update = cnum_updates;
+      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      cx_arr = cx_arr4;
+      cy_arr = cy_arr4;
+
+      printArr();
+      std::cout << "Delta Z = " << dz << std::endl;
+
+      curr_loc = 8;
+      break;
+    case 8:
+      if (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
+      {
+        curr_num_update = num_updates1;
+        dz = get_travel_dz(DELTA_METERS_V);
+      }
+      else
+      {
+        completed = true;
+        curr_num_update = num_updates1 / 2;
+        dz = get_travel_dz(DELTA_METERS_V / 2.0);
+      }
+
+      cx_arr = x_arr1;
+      cy_arr = y_arr1;
+
+      printArr();
+      init_min_array();
+      std::cout << "Delta Z = " << dz << std::endl;
+
       curr_loc = 1;
       break;
     }
-    double increment_z = 0.0;
-    // increment_z = DELTA_METERS_V * scaler;
-    increment_z = DELTA_METERS_V;
-    printArr();
-    dz = get_travel_dz(increment_z);
-    std::cout << "Delta Z = " << dz << std::endl;
-    init_min_array();
 
-    if (curr_loc == 1 || curr_loc == 3)
-    { // Straight line travel
-      double dx = (destx - pose_in.position.x);
-      double dy = (desty - pose_in.position.y);
-      double dist = sqrt(dx * dx + dy * dy);
-      travel_time = (int)(round(dist / DRONE_SPEED_H));
-      int num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
-      double idx = dx / (double)num_updates;
-      double idy = dy / (double)num_updates;
-      double idz = dz / (double)num_updates;
-      for (int i = 0; i < num_updates; i++)
+    double idz = dz / (double)curr_num_update;
+    double startz = pose_stamped.pose.position.z;
+    for (int i = 0; i < curr_num_update; i++)
+    {
+      set_position(cx_arr[i], cy_arr[i], startz + (i + 1) * idz);
+      for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
       {
-        delta_position(idx, idy, idz);
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
+        local_pos_pub.publish(pose_stamped);
+        ros::spinOnce();
+        rate.sleep();
       }
     }
-    else if (curr_loc == 2)
+    if (completed)
     {
-      // Half circle travel 1 --> 2
-      double idz = dz / (double)cnum_updates;
-      for (int i = 0; i < cnum_updates; i++)
-      {
-        pose_stamped.pose.position.x = cx_arr12[i];
-        pose_stamped.pose.position.y = cy_arr12[i];
-        pose_stamped.pose.position.z += idz;
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
-      }
-    }
-    else if (curr_loc == 4)
-    {
-      // Half circle travel 3 --> 4
-      double idz = dz / (double)cnum_updates;
-      for (int i = 0; i < cnum_updates; i++)
-      {
-        pose_stamped.pose.position.x = cx_arr34[i];
-        pose_stamped.pose.position.y = cy_arr34[i];
-        pose_stamped.pose.position.z += idz;
-        for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-        {
-          local_pos_pub.publish(pose_stamped);
-          ros::spinOnce();
-          rate.sleep();
-        }
-      }
+      break;
     }
     iseg++;
   }
   string_to_file(log_filename, "Completed periodic flight\n");
 
-  // // Return to initial point
-  // ROS_INFO("Return to initial point");
-  // double increment_z = 0.0;
-  // double scaler = pow(2.0, 0.25);
-  // increment_z = DELTA_METERS_V * scaler;
-  // travel_time = diameter_time * scaler;
-  // printArr();
-  // dz = get_travel_dz(increment_z);
-  // std::cout << "Delta Z = " << dz << std::endl;
-  // destx = x0;
-  // desty = y0;
-  // init_min_array();
-  // double dxr = (destx - pose_in.position.x) / 2.0;
-  // double dyr = (desty - pose_in.position.y) / 2.0;
-  // num_updates = travel_time * ROS_RATE / UPDATE_JUMP;
-  // double dtheta = M_PI / (double)num_updates;
-  // idz = dz / (double)num_updates;
-  // for (int i = 0; i < num_updates; i++)
-  // {
-  //   double cos_coef = cos(dtheta * i) - cos(dtheta * (i + 1));
-  //   double idx = dxr * cos_coef;
-  //   double idy = dyr * cos_coef;
-  //   delta_position(idx, idy, idz);
-  //   for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
-  //   {
-  //     local_pos_pub.publish(pose_stamped);
-  //     ros::spinOnce();
-  //     rate.sleep();
-  //   }
-  // }
-  // string_to_file(log_filename, "Returned to initial point\n");
-
   // Final drop 1 m to make sure it returns to x0, y0
   ROS_INFO("Final drop 1 m to make sure it returns to x0, y0");
-  int drop_time = (int)(DELTA_METERS_V / DRONE_SPEED_V);
-  num_updates = drop_time * ROS_RATE / UPDATE_JUMP;
-  idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
-  pose_stamped.pose.position.x = x0;
-  pose_stamped.pose.position.y = y0;
+  double drop_time = DELTA_METERS_V / DRONE_SPEED_V;
+  num_updates = (int)(round(drop_time * ROS_RATE / UPDATE_JUMP));
+  idz = -DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
+  startz = pose_stamped.pose.position.z;
   for (int i = 0; i < num_updates; i++)
   {
-    pose_stamped.pose.position.z -= idz;
+    set_position(x0, y0, startz + (i + 1) * idz);
     for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
     {
       local_pos_pub.publish(pose_stamped);
@@ -1112,6 +1238,11 @@ int main(int argc, char **argv)
   string_to_file(log_filename, "Dropped 1 meter to return to x0, y0\n");
 
   ROS_INFO("tring to land");
+  mavros_msgs::CommandTOL land_cmd;
+  land_cmd.request.yaw = 0.0f;
+  land_cmd.request.latitude = 0.0f;
+  land_cmd.request.longitude = 0.0f;
+  land_cmd.request.altitude = 0.0f;
   while (ros::ok())
   {
     if (ros::Time::now() - last_request > ros::Duration(5.0))
