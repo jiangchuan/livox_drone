@@ -28,13 +28,19 @@
 #include "sensor_msgs/NavSatFix.h"
 
 #define ROS_RATE 20
-#define MIN_ARR_LEN 5
-// #define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
-#define UPDATE_JUMP 1 // ROS_RATE / UPDATE_JUMP is the pos update rate
-#define MAX_SCAN_SEG 8
-#define MAX_MID_SCAN_SEG 8
+#define MIN_ARR_LEN 10
+#define DIST_ARR_LEN 10000
+#define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
+// #define UPDATE_JUMP 1 // ROS_RATE / UPDATE_JUMP is the pos update rate
 
-#define DRONE_SPEED_H 1.5
+// #define MAX_SCAN_SEG 12
+// #define MAX_MID_SCAN_SEG 8
+#define MAX_SCAN_SEG 20
+#define MAX_MID_SCAN_SEG 16
+
+#define DETECT_THRESH 300 // 300 in 10000 for one seconds
+
+#define DRONE_SPEED_H 1.0
 #define DRONE_SPEED_V 1.0
 
 // #define SCAN_RADIUS 10.0
@@ -44,7 +50,7 @@
 #define PHI M_PI / 4.0
 
 // #define INITIAL_RISE 10.0
-#define INITIAL_RISE 3.0
+#define INITIAL_RISE 2.0
 #define DELTA_METERS_V 1.0 // maximum dz
 
 // #define NEAR_DIST 12.0
@@ -76,6 +82,10 @@ int num_records = 0;
 
 bool initiating = true;
 float min_dist_arr[MIN_ARR_LEN];
+float dist_arr[DIST_ARR_LEN];
+int curr_dist_index = 0;
+int last_dist_index = DIST_ARR_LEN - 1;
+int update_rate = ROS_RATE / UPDATE_JUMP; // Position update rate
 
 double from_degrees(double d)
 {
@@ -106,7 +116,32 @@ void get_time()
 std::string get_time_str()
 {
   std::stringstream sstm;
-  sstm << year << "-" << month << "-" << day << "_" << hour << "-" << minute << "-" << second;
+  sstm << year << "-";
+  if (month < 10)
+  {
+    sstm << "0";
+  }
+  sstm << month << "-";
+  if (day < 10)
+  {
+    sstm << "0";
+  }
+  sstm << day << "_";
+  if (hour < 10)
+  {
+    sstm << "0";
+  }
+  sstm << hour << "-";
+  if (minute < 10)
+  {
+    sstm << "0";
+  }
+  sstm << minute << "-";
+  if (second < 10)
+  {
+    sstm << "0";
+  }
+  sstm << second;
   return sstm.str();
 }
 
@@ -201,6 +236,25 @@ float get_avg_min()
     s += min_dist_arr[i];
   }
   return s / MIN_ARR_LEN;
+}
+
+float get_avg_dist(float nsecs)
+{
+  int total_len = curr_dist_index;
+
+  if (total_len < DETECT_THRESH * nsecs) // No points detected
+  {
+    curr_dist_index = 0;
+    return 1e6;
+  }
+
+  float s = 0.0f;
+  for (int i = 0; i < total_len; i++)
+  {
+    s += dist_arr[i];
+  }
+  curr_dist_index = 0;
+  return s / total_len;
 }
 
 int binarySearch(float a[], float item, int low, int high) // high = n-1
@@ -323,14 +377,21 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num)
   {
     PointCloudConvert(&tmp_point, p_point_data);
 
-    float tmp_pointx_abs = fabs(tmp_point.x);
-    if (tmp_pointx_abs > 1e-6 && !initiating)
+    // if (tmp_point.x > 1e-6 && !initiating)
+    // {
+    //   int index = binarySearch(min_dist_arr, tmp_point.x, 0, MIN_ARR_LEN - 1);
+    //   insertSorted(min_dist_arr, MIN_ARR_LEN, index, tmp_point.x);
+    // }
+
+    // Collect distances
+    dist_arr[curr_dist_index] = tmp_point.x;
+    if (curr_dist_index < last_dist_index)
     {
-      int index = binarySearch(min_dist_arr, tmp_point.x, 0, MIN_ARR_LEN - 1);
-      insertSorted(min_dist_arr, MIN_ARR_LEN, index, tmp_point.x);
+      curr_dist_index++;
     }
 
-    if (tmp_pointx_abs > 1e-6 || fabs(tmp_point.y) > 1e-6 || fabs(tmp_point.z) > 1e-6)
+    // Save to csv
+    if (tmp_point.x > 1e-6 || fabs(tmp_point.y) > 1e-6 || fabs(tmp_point.z) > 1e-6)
     {
       // 3. GPS rod shift
       stream << std::setprecision(10) << gps_msg->latitude << ",";
@@ -590,9 +651,23 @@ void printArr()
   printf("\n");
 }
 
-double get_travel_dz(double increment_z)
+double get_travel_dz_min(double increment_z)
 {
   float wire_dist = get_avg_min();
+  if (wire_dist < NEAR_DIST) // Too close
+  {
+    return -increment_z;
+  }
+  if (wire_dist < FAR_DIST) // Middle
+  {
+    in_mid_count++;
+    return (double)(wire_dist - mid_dist);
+  }
+  return increment_z; // Too far
+}
+
+double get_travel_dz(float wire_dist, double increment_z)
+{
   if (wire_dist < NEAR_DIST) // Too close
   {
     return -increment_z;
@@ -670,7 +745,7 @@ double dist(double x1, double y1, double x2, double y2)
 int main(int argc, char **argv)
 {
   /* Prepare GPS csv file and log txt file starts */
-  init_min_array();
+  // init_min_array();
   // std::string rootdir = "/home/jiangchuan/livox_data/";
   std::string rootdir = "/home/pi/livox_data/";
   int status = mkdir(rootdir.c_str(), 0777);
@@ -865,8 +940,18 @@ int main(int argc, char **argv)
   int num_updates = (int)(round(rise_time * ROS_RATE / UPDATE_JUMP));
   double idz = DRONE_SPEED_V * UPDATE_JUMP / ROS_RATE;
   double startz = pose_stamped.pose.position.z;
+
+  curr_dist_index = 0;
   for (int i = 0; i < num_updates; i++)
   {
+    if (i % update_rate == 0 && i != 0)
+    {
+      float wire_dist = get_avg_dist(1.0f);
+      if (wire_dist < mid_dist)
+      {
+        break;
+      }
+    }
     set_position(x0, y0, startz + (i + 1) * idz);
     for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
     {
@@ -874,13 +959,6 @@ int main(int argc, char **argv)
       ros::spinOnce();
       rate.sleep();
     }
-
-    // printArr();
-    if (get_avg_min() < mid_dist)
-    {
-      break;
-    }
-    // std::cout << "Initial rise delta Z = " << dz << std::endl;
   }
   std::cout << "Completed initial rise" << std::endl;
   string_to_file(log_filename, "Completed initial rise\n");
@@ -944,15 +1022,6 @@ int main(int argc, char **argv)
   double y7r = y0 + rotate_y(x7, y7, sinyaw, cosyaw);
   double x8r = x0 + rotate_x(x8, y8, sinyaw, cosyaw);
   double y8r = y0 + rotate_y(x8, y8, sinyaw, cosyaw);
-
-  // std::cout << "x1 = " << x1 << ", y1 = " << y1 << std::endl;
-  // std::cout << "x2 = " << x2 << ", y2 = " << y2 << std::endl;
-  // std::cout << "x3 = " << x3 << ", y3 = " << y3 << std::endl;
-  // std::cout << "x4 = " << x4 << ", y4 = " << y4 << std::endl;
-  // std::cout << "x5 = " << x5 << ", y5 = " << y5 << std::endl;
-  // std::cout << "x6 = " << x6 << ", y6 = " << y6 << std::endl;
-  // std::cout << "x7 = " << x7 << ", y7 = " << y7 << std::endl;
-  // std::cout << "x8 = " << x8 << ", y8 = " << y8 << std::endl;
 
   // Lines
   double xstart = x0;
@@ -1070,11 +1139,11 @@ int main(int argc, char **argv)
     cy_arr4[i] = y0 + rotate_y(cx, cy, sinyaw, cosyaw);
   }
 
-  //////////////////////////////////////
   ROS_INFO("Begin 8 style scan >>>");
   int curr_loc = 0;
   int iseg = 0;
   bool completed = false;
+  float last_wire_dist = mid_dist;
   // while (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
   while (true)
   {
@@ -1088,116 +1157,89 @@ int main(int argc, char **argv)
     {
     case 0:
       curr_num_update = num_updates0;
-      dz = get_travel_dz(DELTA_METERS_V / 2.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 2.0);
       cx_arr = x_arr0;
       cy_arr = y_arr0;
-      printArr();
       std::cout << "Delta Z = " << dz << std::endl;
       curr_loc = 1;
       break;
     case 1:
       curr_num_update = cnum_updates;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = cx_arr1;
       cy_arr = cy_arr1;
-
-      printArr();
-      init_min_array();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 2;
       break;
     case 2:
       curr_num_update = num_updates2;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = x_arr2;
       cy_arr = y_arr2;
-
-      printArr();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 3;
       break;
     case 3:
       curr_num_update = cnum_updates;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = cx_arr2;
       cy_arr = cy_arr2;
-
-      printArr();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 4;
       break;
     case 4:
       curr_num_update = num_updates3;
-      dz = get_travel_dz(DELTA_METERS_V);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V);
       cx_arr = x_arr3;
       cy_arr = y_arr3;
-
-      printArr();
-      init_min_array();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 5;
       break;
     case 5:
       curr_num_update = cnum_updates;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = cx_arr3;
       cy_arr = cy_arr3;
-
-      printArr();
-      init_min_array();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 6;
       break;
     case 6:
       curr_num_update = num_updates4;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = x_arr4;
       cy_arr = y_arr4;
-
-      printArr();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 7;
       break;
     case 7:
       curr_num_update = cnum_updates;
-      dz = get_travel_dz(DELTA_METERS_V / 3.0);
+      dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 3.0);
       cx_arr = cx_arr4;
       cy_arr = cy_arr4;
-
-      printArr();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 8;
       break;
     case 8:
       if (iseg < MAX_SCAN_SEG && in_mid_count < MAX_MID_SCAN_SEG)
       {
         curr_num_update = num_updates1;
-        dz = get_travel_dz(DELTA_METERS_V);
+        dz = get_travel_dz(last_wire_dist, DELTA_METERS_V);
       }
       else
       {
         completed = true;
         curr_num_update = num_updates1 / 2;
-        dz = get_travel_dz(DELTA_METERS_V / 2.0);
+        dz = get_travel_dz(last_wire_dist, DELTA_METERS_V / 2.0);
       }
-
       cx_arr = x_arr1;
       cy_arr = y_arr1;
-
-      printArr();
-      init_min_array();
       std::cout << "Delta Z = " << dz << std::endl;
-
       curr_loc = 1;
       break;
     }
+
+    // TODO: 1. Print the trajectory to see why there is a kink from first line to circle
+    //
 
     double idz = dz / (double)curr_num_update;
     double startz = pose_stamped.pose.position.z;
@@ -1215,6 +1257,7 @@ int main(int argc, char **argv)
     {
       break;
     }
+    last_wire_dist = get_avg_dist((float)(curr_num_update * UPDATE_JUMP) / (float)ROS_RATE);
     iseg++;
   }
   string_to_file(log_filename, "Completed periodic flight\n");
