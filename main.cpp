@@ -1325,13 +1325,10 @@
 #include <mavros_msgs/CommandTOL.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
-#include "tf/tf.h"
 
 #define FLIGHT_ALTITUDE 2.0f
 
 mavros_msgs::State current_state;
-geometry_msgs::Quaternion current_qtn_msg;
-tf::Quaternion current_qtn;
 geometry_msgs::PoseStamped pose;
 
 void state_callback(const mavros_msgs::State::ConstPtr &msg)
@@ -1339,13 +1336,6 @@ void state_callback(const mavros_msgs::State::ConstPtr &msg)
     current_state = *msg;
 }
 
-void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
-{
-    current_qtn_msg = msg->pose.orientation;
-    // ROS_INFO("Local Pos Seq: [%d]", msg->header.seq);
-    // ROS_INFO("Local Pos Position x: [%f], y: [%f], z: [%f]", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-    // ROS_INFO("Local Pos Orientation x: [%f], y: [%f], z: [%f], w: [%f]", msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z, msg->pose.orientation.w);
-}
 
 int main(int argc, char **argv)
 {
@@ -1353,7 +1343,6 @@ int main(int argc, char **argv)
     ros::NodeHandle nh;
 
     ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_callback);
-    ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
     ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>("mavros/setpoint_position/local", 10);
     ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
     ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
@@ -1378,23 +1367,9 @@ int main(int argc, char **argv)
     }
     // ros::Duration(5).sleep();
 
-    while (ros::ok() && fabs(current_qtn_msg.x) + fabs(current_qtn_msg.y) + fabs(current_qtn_msg.z) + fabs(current_qtn_msg.w) < 1e-6)
-    {
-        ros::spinOnce();
-        rate.sleep();
-        ROS_INFO("getting local position...");
-    }
-
     pose.pose.position.x = 0.0;
     pose.pose.position.y = 0.0;
     pose.pose.position.z = FLIGHT_ALTITUDE;
-
-    ROS_INFO("Before trans x: [%f], y: [%f], z: [%f], w: [%f]", current_qtn_msg.x, current_qtn_msg.y, current_qtn_msg.z, current_qtn_msg.w);
-    quaternionMsgToTF(current_qtn_msg, current_qtn);
-    current_qtn.normalize();
-    ROS_INFO("After trans x: [%f], y: [%f], z: [%f], w: [%f]", current_qtn.x(), current_qtn.y(), current_qtn.z(), current_qtn.w());
-
-    quaternionTFToMsg(current_qtn, pose.pose.orientation);
 
     //send a few setpoints before starting
     for (int i = 100; ros::ok() && i > 0; --i)
