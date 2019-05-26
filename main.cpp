@@ -1310,9 +1310,6 @@
 //   return 0;
 // }
 
-
-
-
 /**
  * @file offb_node.cpp
  * @brief offboard example node, written with mavros version 0.14.2, px4 flight
@@ -1326,195 +1323,215 @@
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 
+#define ROS_RATE 20
+#define UPDATE_JUMP 4 // ROS_RATE / UPDATE_JUMP is the pos update rate
 #define FLIGHT_ALTITUDE 2.0f
 
 mavros_msgs::State current_state;
 geometry_msgs::PoseStamped pose;
+geometry_msgs::Pose pose_in;
 
 void state_callback(const mavros_msgs::State::ConstPtr &msg)
 {
-    current_state = *msg;
+  current_state = *msg;
 }
 
+void set_position(double x, double y, double z)
+{
+  pose.pose.position.x = x;
+  pose.pose.position.y = y;
+  pose.pose.position.z = z;
+}
+
+void local_pos_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+  if (msg)
+  {
+    pose_in = msg->pose;
+    // ROS_INFO("pose: x=[%f], y=[%f], z=[%f]", pose_in.position.x, pose_in.position.y, pose_in.position.z);
+    // ROS_INFO("orientation: x=%f, y=%f, z=%f, w=%f", pose_in.orientation.x, pose_in.orientation.y, pose_in.orientation.z, pose_in.orientation.w);
+  }
+}
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "livox_lidar_publisher");
-    ros::NodeHandle nh;
+  ros::init(argc, argv, "livox_lidar_publisher");
+  ros::NodeHandle nh;
 
-    ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_callback);
-    ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>("mavros/setpoint_position/local", 10);
-    ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
-    ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
-    ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
+  ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state", 10, state_callback);
+  ros::Subscriber local_pos_sub = nh.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, local_pos_callback);
 
-    //the setpoint publishing rate MUST be faster than 2Hz
-    ros::Rate rate(20.0);
+  ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>("mavros/setpoint_position/local", 10);
+  ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
+  ros::ServiceClient land_client = nh.serviceClient<mavros_msgs::CommandTOL>("mavros/cmd/land");
+  ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
 
-    // wait for FCU connection
-    while (ros::ok() && !current_state.connected)
+  //the setpoint publishing rate MUST be faster than 2Hz
+  ros::Rate rate((double)ROS_RATE);
+
+  // wait for FCU connection
+  while (ros::ok() && !current_state.connected)
+  {
+    ros::spinOnce();
+    rate.sleep();
+    ROS_INFO("connecting to FCT...");
+  }
+
+  // Wait for 5 seconds to get local position
+  for (int i = 100; ros::ok() && i > 0; --i)
+  {
+    ros::spinOnce();
+    rate.sleep();
+  }
+  // ros::Duration(5).sleep();
+
+  set_position(pose_in.position.x, pose_in.position.y, pose_in.position.z);
+  pose.pose.position.z = pose.pose.position.z > 0 ? pose.pose.position.z + 2.0 : 2.0;
+  std::cout << "Initial z = " << pose.pose.position.z << std::endl;
+
+  //send a few setpoints before starting
+  for (int i = 100; ros::ok() && i > 0; --i)
+  {
+    local_pos_pub.publish(pose);
+    ros::spinOnce();
+    rate.sleep();
+  }
+
+  // change to offboard mode and arm
+  mavros_msgs::SetMode offb_set_mode;
+  offb_set_mode.request.custom_mode = "OFFBOARD";
+  ros::Time last_request = ros::Time::now();
+  while (ros::ok() && current_state.mode != "OFFBOARD")
+  {
+    if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
-        ros::spinOnce();
-        rate.sleep();
-        ROS_INFO("connecting to FCT...");
+      ROS_INFO(current_state.mode.c_str());
+      if (set_mode_client.call(offb_set_mode) &&
+          offb_set_mode.response.mode_sent)
+      {
+        ROS_INFO("Offboard enabled");
+      }
+      last_request = ros::Time::now();
     }
+    local_pos_pub.publish(pose);
+    ros::spinOnce();
+    rate.sleep();
+  }
 
-    // Wait for 5 seconds to get local position
-    for (int i = 100; ros::ok() && i > 0; --i)
+  mavros_msgs::CommandBool arm_cmd;
+  arm_cmd.request.value = true;
+  while (ros::ok() && !current_state.armed)
+  {
+    if (ros::Time::now() - last_request > ros::Duration(5.0))
     {
-        ros::spinOnce();
-        rate.sleep();
+      if (arming_client.call(arm_cmd) &&
+          arm_cmd.response.success)
+      {
+        ROS_INFO("Vehicle armed");
+      }
+      last_request = ros::Time::now();
     }
-    // ros::Duration(5).sleep();
+    local_pos_pub.publish(pose);
+    ros::spinOnce();
+    rate.sleep();
+  }
 
-    pose.pose.position.x = 0.0;
-    pose.pose.position.y = 0.0;
-    pose.pose.position.z = FLIGHT_ALTITUDE;
+  /////////////////////////////
+  // Initial rise 10 m
+  double initial_rise = 2.0;
+  double drone_speed_v = 1.0;
+  ROS_INFO("Initial rise for %g meters", initial_rise);
+  double rise_time = initial_rise / drone_speed_v;
+  int num_updates = (int)(round(rise_time * ROS_RATE / UPDATE_JUMP));
+  double idz = drone_speed_v * UPDATE_JUMP / ROS_RATE;
+  double startz = pose.pose.position.z;
 
-    //send a few setpoints before starting
-    for (int i = 100; ros::ok() && i > 0; --i)
+  for (int i = 0; i < num_updates; i++)
+  {
+    pose.pose.position.z = startz + (i + 1) * idz;
+    for (int j = 0; ros::ok() && j < UPDATE_JUMP; j++)
     {
-        local_pos_pub.publish(pose);
-        ros::spinOnce();
-        rate.sleep();
+      local_pos_pub.publish(pose);
+      ros::spinOnce();
+      rate.sleep();
     }
+  }
+  std::cout << "Completed initial rise" << std::endl;
 
-    // change to offboard mode and arm
-    mavros_msgs::SetMode offb_set_mode;
-    offb_set_mode.request.custom_mode = "OFFBOARD";
-    ros::Time last_request = ros::Time::now();
-    while (ros::ok() && current_state.mode != "OFFBOARD")
-    {
-        if (ros::Time::now() - last_request > ros::Duration(5.0))
-        {
-            ROS_INFO(current_state.mode.c_str());
-            if (set_mode_client.call(offb_set_mode) &&
-                offb_set_mode.response.mode_sent)
-            {
-                ROS_INFO("Offboard enabled");
-            }
-            last_request = ros::Time::now();
-        }
-        local_pos_pub.publish(pose);
-        ros::spinOnce();
-        rate.sleep();
-    }
-
-    mavros_msgs::CommandBool arm_cmd;
-    arm_cmd.request.value = true;
-    while (ros::ok() && !current_state.armed)
-    {
-        if (ros::Time::now() - last_request > ros::Duration(5.0))
-        {
-            if (arming_client.call(arm_cmd) &&
-                arm_cmd.response.success)
-            {
-                ROS_INFO("Vehicle armed");
-            }
-            last_request = ros::Time::now();
-        }
-        local_pos_pub.publish(pose);
-        ros::spinOnce();
-        rate.sleep();
-    }
-
-    for (int iseg = 0; iseg < 4; iseg++)
-    {
-        // go to the first waypoint
-        pose.pose.position.x = 0;
-        pose.pose.position.y = 0;
-        pose.pose.position.z = FLIGHT_ALTITUDE;
-
-        ROS_INFO("going to the first way point");
-        for (int i = 0; ros::ok() && i < 10 * 20; ++i)
-        {
-            local_pos_pub.publish(pose);
-            ros::spinOnce();
-            rate.sleep();
-        }
-        ROS_INFO("first way point finished!");
-
-        // go to the second waypoint
-        pose.pose.position.x = 0;
-        pose.pose.position.y = 1;
-        pose.pose.position.z = FLIGHT_ALTITUDE;
-
-        //send setpoints for 10 seconds
-        ROS_INFO("going to second way point");
-        for (int i = 0; ros::ok() && i < 10 * 20; ++i)
-        {
-
-            local_pos_pub.publish(pose);
-            ros::spinOnce();
-            rate.sleep();
-        }
-        ROS_INFO("second way point finished!");
-
-        // go to the third waypoint
-        pose.pose.position.x = 1;
-        pose.pose.position.y = 1;
-        pose.pose.position.z = FLIGHT_ALTITUDE;
-        //send setpoints for 10 seconds
-        ROS_INFO("going to third way point");
-        for (int i = 0; ros::ok() && i < 10 * 20; ++i)
-        {
-
-            local_pos_pub.publish(pose);
-            ros::spinOnce();
-            rate.sleep();
-        }
-        ROS_INFO("third way point finished!");
-
-        // go to the forth waypoint
-        pose.pose.position.x = 1;
-        pose.pose.position.y = 0;
-        pose.pose.position.z = FLIGHT_ALTITUDE;
-        //send setpoints for 10 seconds
-        ROS_INFO("going to forth way point");
-        for (int i = 0; ros::ok() && i < 10 * 20; ++i)
-        {
-
-            local_pos_pub.publish(pose);
-            ros::spinOnce();
-            rate.sleep();
-        }
-        ROS_INFO("forth way point finished!");
-    }
-
-    pose.pose.position.x = 0;
-    pose.pose.position.y = 0;
-    pose.pose.position.z = FLIGHT_ALTITUDE;
-    ROS_INFO("going back to the first point!");
-    //send setpoints for 10 seconds
+  for (int iseg = 0; iseg < 4; iseg++)
+  {
+    // go to the first waypoint
+    pose.pose.position.x += 1.0;
+    ROS_INFO("going to the first way point");
     for (int i = 0; ros::ok() && i < 10 * 20; ++i)
     {
-        local_pos_pub.publish(pose);
-        ros::spinOnce();
-        rate.sleep();
+      local_pos_pub.publish(pose);
+      ros::spinOnce();
+      rate.sleep();
     }
+    ROS_INFO("first way point finished!");
 
-    mavros_msgs::CommandTOL land_cmd;
-    land_cmd.request.yaw = 0;
-    land_cmd.request.latitude = 0;
-    land_cmd.request.longitude = 0;
-    land_cmd.request.altitude = 0;
-    ROS_INFO("tring to land");
-    while (ros::ok())
+    // go to the second waypoint
+    pose.pose.position.y += 1.0;
+    //send setpoints for 10 seconds
+    ROS_INFO("going to second way point");
+    for (int i = 0; ros::ok() && i < 10 * 20; ++i)
     {
-        if (ros::Time::now() - last_request > ros::Duration(5.0))
-        {
-            if (land_client.call(land_cmd) && land_cmd.response.success)
-            {
-                ROS_INFO("Landing");
-                break;
-            }
-            last_request = ros::Time::now();
-        }
-        local_pos_pub.publish(pose);
-        ros::spinOnce();
-        rate.sleep();
+
+      local_pos_pub.publish(pose);
+      ros::spinOnce();
+      rate.sleep();
     }
+    ROS_INFO("second way point finished!");
 
-    return 0;
+    // go to the third waypoint
+    pose.pose.position.x -= 1.0;
+    //send setpoints for 10 seconds
+    ROS_INFO("going to third way point");
+    for (int i = 0; ros::ok() && i < 10 * 20; ++i)
+    {
+
+      local_pos_pub.publish(pose);
+      ros::spinOnce();
+      rate.sleep();
+    }
+    ROS_INFO("third way point finished!");
+
+    // go to the forth waypoint
+    pose.pose.position.y -= 1.0;
+    //send setpoints for 10 seconds
+    ROS_INFO("going to forth way point");
+    for (int i = 0; ros::ok() && i < 10 * 20; ++i)
+    {
+
+      local_pos_pub.publish(pose);
+      ros::spinOnce();
+      rate.sleep();
+    }
+    ROS_INFO("forth way point finished!");
+  }
+
+  mavros_msgs::CommandTOL land_cmd;
+  land_cmd.request.yaw = 0;
+  land_cmd.request.latitude = 0;
+  land_cmd.request.longitude = 0;
+  land_cmd.request.altitude = 0;
+  ROS_INFO("tring to land");
+  while (ros::ok())
+  {
+    if (ros::Time::now() - last_request > ros::Duration(5.0))
+    {
+      if (land_client.call(land_cmd) && land_cmd.response.success)
+      {
+        ROS_INFO("Landing");
+        break;
+      }
+      last_request = ros::Time::now();
+    }
+    local_pos_pub.publish(pose);
+    ros::spinOnce();
+    rate.sleep();
+  }
+
+  return 0;
 }
-
